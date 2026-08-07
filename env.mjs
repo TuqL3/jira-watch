@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -21,8 +21,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // under cache/<owner>/<plugin>/<version-hash>/, while a dev checkout sits in
 // marketplaces/<name>/. The version hash changes on every plugin update, so the
 // path has to be discovered rather than written down.
-function findSkillDir() {
-  if (process.env.FALCON_JIRA_DIR) return process.env.FALCON_JIRA_DIR;
+export function skillDirCandidates() {
+  if (process.env.FALCON_JIRA_DIR) return [process.env.FALCON_JIRA_DIR];
 
   const plugins = join(homedir(), '.claude/plugins');
   const dirs = (p) => {
@@ -45,31 +45,34 @@ function findSkillDir() {
   // A personal copy, which the source repo still calls jira-create.
   candidates.push(join(homedir(), '.claude/skills/jira'), join(homedir(), '.claude/skills/jira-create'));
 
-  const hit = candidates.find((c) => existsSync(join(c, 'scripts/lib/jira.mjs')));
-  return hit || candidates[0] || join(plugins, 'marketplaces/falcon/skills/jira');
+  return candidates.filter((c) => existsSync(join(c, 'scripts/lib/jira.mjs')));
 }
 
-export const SKILL_DIR = findSkillDir();
+// Older copies of the skill exist on some machines and export a different set
+// of functions, so "the file is there" is not enough — the module has to be
+// checked before it is trusted.
+const REQUIRED = ['loadEnv', 'jiraFetch', 'fetchMyself'];
+
+export const SKILL_DIR = skillDirCandidates()[0]
+  || join(homedir(), '.claude/plugins/marketplaces/falcon/skills/jira');
 export const LIB = join(SKILL_DIR, 'scripts/lib/jira.mjs');
 
 // The falcon skill's .env comes first because falcon:jira reads it too — one
 // token in one place serves both. This directory is the fallback.
-const ENV_CANDIDATES = [
-  join(SKILL_DIR, '.env'),
-  join(HERE, '.env'),
-];
+const envCandidates = (skillDir = SKILL_DIR) => [join(skillDir, '.env'), join(HERE, '.env')];
 
-export function pickEnvPath() {
-  for (const p of ENV_CANDIDATES) {
+export function pickEnvPath(skillDir = SKILL_DIR) {
+  const list = envCandidates(skillDir);
+  for (const p of list) {
     if (existsSync(p) && /^\s*JIRA_TOKEN\s*=\s*\S/m.test(readFileSync(p, 'utf8'))) return p;
   }
-  return ENV_CANDIDATES[0]; // let loadEnv raise MISSING_JIRA_TOKEN with a sane path
+  return list[0]; // let loadEnv raise MISSING_JIRA_TOKEN with a sane path
 }
 
 /** A setting from the environment, else from whichever .env holds the token. */
 function setting(name) {
   if (process.env[name]) return process.env[name];
-  for (const p of ENV_CANDIDATES) {
+  for (const p of envCandidates()) {
     if (!existsSync(p)) continue;
     const m = readFileSync(p, 'utf8').match(new RegExp(`^\\s*${name}\\s*=\\s*(\\S+)`, 'm'));
     if (m) return m[1];
@@ -96,11 +99,47 @@ export function requireAssigneesField() {
   return ASSIGNEES_FIELD;
 }
 
+/**
+ * First candidate whose jira.mjs actually exports what we need. install.sh asks
+ * for this too, so the token gets written next to the copy that will be used.
+ */
+export async function resolveSkill() {
+  const candidates = skillDirCandidates();
+  if (!candidates.length) {
+    throw new Error(
+      'Không tìm thấy plugin falcon (skill jira). Đã tìm trong:\n'
+      + '  ~/.claude/plugins/marketplaces/*/skills/jira\n'
+      + '  ~/.claude/plugins/cache/*/*/*/skills/jira\n'
+      + '  ~/.claude/skills/jira, ~/.claude/skills/jira-create\n'
+      + 'Cài ở chỗ khác thì chỉ đường: FALCON_JIRA_DIR=<path>',
+    );
+  }
+
+  const rejected = [];
+  for (const dir of candidates) {
+    const libPath = join(dir, 'scripts/lib/jira.mjs');
+    let lib;
+    try {
+      lib = await import(pathToFileURL(libPath).href);
+    } catch (err) {
+      rejected.push(`${libPath} — không nạp được: ${err.message}`);
+      continue;
+    }
+    const missing = REQUIRED.filter((fn) => typeof lib[fn] !== 'function');
+    if (missing.length) {
+      rejected.push(`${libPath} — bản cũ, thiếu: ${missing.join(', ')}`);
+      continue;
+    }
+    return { dir, libPath, lib };
+  }
+
+  throw new Error(`Tìm thấy skill jira nhưng không bản nào dùng được:\n  ${rejected.join('\n  ')}`);
+}
+
 /** Load the falcon jira lib and an env that has a token in it. */
 export async function connect({ verbose = false } = {}) {
-  if (!existsSync(LIB)) throw new Error(`Cannot find the falcon jira lib at ${LIB} — did the plugin move?`);
-  const lib = await import(LIB);
-  const envPath = pickEnvPath();
-  if (verbose) console.log('env:', envPath);
-  return { ...lib, env: lib.loadEnv(envPath) };
+  const { dir, libPath, lib } = await resolveSkill();
+  const envPath = pickEnvPath(dir);
+  if (verbose) console.log('lib:', libPath, '\nenv:', envPath);
+  return { ...lib, env: lib.loadEnv(envPath), skillDir: dir };
 }

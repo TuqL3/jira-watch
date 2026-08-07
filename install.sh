@@ -45,13 +45,15 @@ ok "node $($NODE_BIN -v) tại $NODE_BIN"
 # Where the plugin sits differs per machine (marketplace install vs dev
 # checkout, and the version hash in the cache path changes on every update), so
 # let env.mjs do the search instead of guessing one path here.
+# resolveSkill also loads each candidate and checks its exports, so an old copy
+# of the skill is skipped here exactly as it is at runtime.
 FALCON_JIRA_DIR="$(FALCON_JIRA_DIR="${FALCON_JIRA_DIR:-}" "$NODE_BIN" --input-type=module -e "
-const { SKILL_DIR } = await import('$HERE/env.mjs');
-process.stdout.write(SKILL_DIR);
+const { resolveSkill } = await import('$HERE/env.mjs');
+process.stdout.write((await resolveSkill()).dir);
 " 2>/dev/null || true)"
 
 [ -n "$FALCON_JIRA_DIR" ] && [ -f "$FALCON_JIRA_DIR/scripts/lib/jira.mjs" ] || {
-  red "Không tìm thấy plugin falcon."
+  red "Không tìm thấy plugin falcon (hoặc chỉ có bản cũ thiếu loadEnv)."
   echo "  Đã tìm trong:"
   echo "    ~/.claude/plugins/marketplaces/*/skills/jira"
   echo "    ~/.claude/plugins/cache/*/*/*/skills/jira"
