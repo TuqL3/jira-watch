@@ -154,20 +154,38 @@ export async function resolveSkill() {
 
   const rejected = [];
   for (const dir of candidates) {
-    const libPath = join(dir, 'scripts/lib/jira.mjs');
-    let lib;
+    const libDir = join(dir, 'scripts/lib');
+    // The skill splits its helpers across files and moves them between
+    // versions — loadEnv and jiraFetch have already left jira.mjs once — so
+    // merge the exports of every module in lib/ instead of naming one file.
+    let files = [];
     try {
-      lib = await import(pathToFileURL(libPath).href);
-    } catch (err) {
-      rejected.push(`${libPath} — không nạp được: ${err.message}`);
+      files = readdirSync(libDir).filter((f) => f.endsWith('.mjs')).sort();
+    } catch {
+      rejected.push(`${libDir} — không đọc được thư mục`);
       continue;
     }
+
+    const lib = {};
+    const errors = [];
+    for (const f of files) {
+      try {
+        const mod = await import(pathToFileURL(join(libDir, f)).href);
+        for (const [k, v] of Object.entries(mod)) if (!(k in lib)) lib[k] = v;
+      } catch (err) {
+        errors.push(`${f}: ${err.message}`);
+      }
+    }
+
     const missing = REQUIRED.filter((fn) => typeof lib[fn] !== 'function');
     if (missing.length) {
-      rejected.push(`${libPath} — bản cũ, thiếu: ${missing.join(', ')}`);
+      rejected.push(
+        `${libDir} — thiếu ${missing.join(', ')} (đã gom ${files.join(', ') || 'không có file .mjs nào'})`
+        + (errors.length ? `; lỗi nạp: ${errors.join(' | ')}` : ''),
+      );
       continue;
     }
-    return { dir, libPath, lib };
+    return { dir, libPath: libDir, lib };
   }
 
   throw new Error(`Tìm thấy skill jira nhưng không bản nào dùng được:\n  ${rejected.join('\n  ')}`);
