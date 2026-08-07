@@ -14,6 +14,11 @@ APP_DIR="$HOME/Applications/JiraNotify.app"
 PLIST="$HOME/Library/LaunchAgents/com.jira-watch.plist"
 INTERVAL="${INTERVAL:-60}"
 
+# The notification icon. icon.icns ships with the installer already built from
+# this; the URL is only the fallback for a checkout that lacks the file.
+# Jira's own /images/64jira.png is 64px, which upscales badly.
+ICON_URL="${ICON_URL:-https://cdn-icons-png.flaticon.com/512/5968/5968875.png}"
+
 red() { printf '\033[31m%s\033[0m\n' "$1"; }
 ok()  { printf '\033[32m✓\033[0m %s\n' "$1"; }
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -144,8 +149,8 @@ ICON_WHY=""
 if [ -f "$HERE/icon.icns" ]; then
   cp "$HERE/icon.icns" "$APP_DIR/Contents/Resources/applet.icns"
   ok "icon Jira ($(wc -c < "$HERE/icon.icns" | tr -d ' ') bytes, đi kèm sẵn)"
-elif ! curl -fsSL --max-time 15 "$BASE_URL/images/64jira.png" -o "$ICON_TMP/src.png" 2>"$ICON_TMP/curl.err"; then
-  ICON_WHY="không tải được $BASE_URL/images/64jira.png ($(tr -d '\n' < "$ICON_TMP/curl.err" | tail -c 80))"
+elif ! curl -fsSL --max-time 15 "$ICON_URL" -o "$ICON_TMP/src.png" 2>"$ICON_TMP/curl.err"; then
+  ICON_WHY="không tải được $ICON_URL ($(tr -d '\n' < "$ICON_TMP/curl.err" | tail -c 80))"
 elif ! command -v iconutil >/dev/null 2>&1; then
   # iconutil ships with the Xcode command line tools, which plenty of machines
   # do not have. sips is part of macOS itself and converts straight to icns —

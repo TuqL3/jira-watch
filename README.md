@@ -142,6 +142,22 @@ Client Jira nằm trong `jira.mjs` (~90 dòng: đọc config, fetch kèm Bearer,
 Trước đây phần này mượn thư viện của plugin `falcon` và gãy hai lần trong một giờ khi
 thư viện đó được sắp xếp lại — nên giờ tự chứa, không phụ thuộc plugin nào.
 
+## Icon thông báo
+
+`icon.icns` đóng gói sẵn trong file cài — không tải gì lúc cài, không cần
+`iconutil` (nó thuộc Xcode Command Line Tools, nhiều máy không có).
+
+Đổi icon khác:
+
+```bash
+./make-icon.sh anh-cua-ban.png icon.icns   # PNG 512px, nền trong suốt
+./release.sh v1.1.5 "Đổi icon"
+```
+
+macOS cache icon theo bundle id, nên `install.sh` khởi động lại `Dock`,
+`NotificationCenter` và `usernoted` sau khi dựng app. **Noti cũ vẫn giữ icon lúc
+nó được tạo** — chỉ noti mới đổi.
+
 ## Giới hạn đã biết
 
 - **macOS only.** Dùng `launchd` + `osascript`.
