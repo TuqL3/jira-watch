@@ -63,6 +63,26 @@ export function lastChangeAuthor(changelog, fields) {
   return '';
 }
 
+/**
+ * Compare two "v1.2.3" tags. Returns true when `latest` is newer than
+ * `current`. Anything unparseable counts as "not newer", so a malformed tag
+ * cannot nag forever or trigger an unwanted update.
+ */
+export function isNewerVersion(latest, current) {
+  const parse = (v) => {
+    const m = String(v || '').match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const a = parse(latest);
+  const b = parse(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] > b[i]) return true;
+    if (a[i] < b[i]) return false;
+  }
+  return false;
+}
+
 /** Last `max` non-empty lines, oldest first. Empty input stays empty. */
 export function keepLast(text, max) {
   const rows = String(text || '').split('\n').filter((r) => r !== '');
@@ -267,6 +287,70 @@ function trimLogs() {
   }
 }
 
+const REPO = 'TuqL3/jira-watch';
+const VERSION_PATH = join(HERE, 'VERSION');
+const UPDATE_STAMP = join(HERE, 'last-update-check.txt');
+const UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Tell the user when a newer release exists. Applying it means running the
+ * installer, which restarts the Dock and the notification daemon — too rude to
+ * do unannounced, so that only happens with JIRA_AUTO_UPDATE=1.
+ */
+async function checkForUpdate() {
+  if (process.env.JIRA_NO_UPDATE_CHECK === '1') return;
+  if (!existsSync(VERSION_PATH)) return; // installed before versions were tracked
+
+  const now = Date.now();
+  if (existsSync(UPDATE_STAMP)) {
+    const last = Number(readFileSync(UPDATE_STAMP, 'utf8').trim());
+    if (Number.isFinite(last) && now - last < UPDATE_EVERY_MS) return;
+  }
+  // Stamp before the request: a failing network must not retry every poll.
+  writeFileSync(UPDATE_STAMP, String(now));
+
+  const current = readFileSync(VERSION_PATH, 'utf8').trim();
+  let latest = '';
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return;
+    latest = (await res.json())?.tag_name || '';
+  } catch {
+    return; // offline, or GitHub is unhappy — try again in six hours
+  }
+
+  if (!isNewerVersion(latest, current)) return;
+
+  if (process.env.JIRA_AUTO_UPDATE === '1') {
+    console.log(`${localStamp()}  cập nhật ${current} -> ${latest}`);
+    try {
+      execFileSync('/bin/bash', ['-c',
+        `curl -fsSL https://github.com/${REPO}/releases/latest/download/install-jira-watch.sh `
+        + `| TARGET=${JSON.stringify(HERE)} bash`],
+      { timeout: 300_000, stdio: 'ignore' });
+      console.log(`${localStamp()}  đã cập nhật lên ${latest}`);
+    } catch (err) {
+      console.error(`${localStamp()}  cập nhật thất bại: ${err.message}`);
+    }
+    return;
+  }
+
+  notify({
+    title: `jira-watch ${latest}`,
+    subtitle: `đang dùng ${current}`,
+    message: 'Bấm để xem bản mới. Cập nhật: chạy lại lệnh cài.',
+    url: `https://github.com/${REPO}/releases/latest`,
+  });
+  console.log(`${localStamp()}  có bản mới: ${current} -> ${latest}`);
+}
+
+function localStamp() {
+  return new Date().toLocaleString('sv-SE');
+}
+
 async function main() {
   trimLogs();
   requireAssigneesField();
@@ -320,7 +404,7 @@ async function main() {
   }
 
   // Local time, not UTC: a log stamped 7 hours off is worse than no stamp.
-  const stamp = new Date().toLocaleString('sv-SE');
+  const stamp = localStamp();
 
   // At a 15s interval a "nothing new" line every run would bury the real events
   // under thousands of rows a day. Events go to the log; liveness goes to a
@@ -332,6 +416,9 @@ async function main() {
     console.log(`${stamp}  ${e.text}`);
   }
   if (!events.length && verbose) console.log(`${stamp}  nothing new (${issues.length} issue in window)`);
+
+  // Last, so a GitHub hiccup can never delay the notifications people rely on.
+  await checkForUpdate();
 }
 
 // ------------------------------------------------------------------ selftest
@@ -371,6 +458,16 @@ function selftest() {
   console.assert(lastChangeAuthor(cl, ['status']) === 'bob', 'ignores entries that touch other fields');
   console.assert(lastChangeAuthor(cl, ['priority']) === '', 'no matching entry yields no author');
   console.assert(lastChangeAuthor(null, ['status']) === '', 'a missing changelog is not an error');
+
+  // Version comparison decides whether people get nagged, or auto-updated.
+  console.assert(isNewerVersion('v1.0.1', 'v1.0.0'), 'patch bump is newer');
+  console.assert(isNewerVersion('v1.1.0', 'v1.0.9'), 'minor beats a bigger patch');
+  console.assert(isNewerVersion('v2.0.0', 'v1.9.9'), 'major beats everything below');
+  console.assert(!isNewerVersion('v1.0.0', 'v1.0.0'), 'same version is not newer');
+  console.assert(!isNewerVersion('v1.0.0', 'v1.0.1'), 'older is not newer');
+  console.assert(!isNewerVersion('v1.0.10', 'v1.0.9') === false, 'ten beats nine, not string order');
+  console.assert(!isNewerVersion('rác', 'v1.0.0'), 'an unparseable tag never triggers an update');
+  console.assert(!isNewerVersion('v9.9.9', 'unknown'), 'an unknown local version never triggers an update');
 
   // Log trimming keeps the newest rows, drops the oldest.
   console.assert(keepLast('a\nb\nc\n', 2).join() === 'b,c', 'keeps the last rows, oldest dropped');

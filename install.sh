@@ -257,6 +257,11 @@ killall NotificationCenter >/dev/null 2>&1 || true
 killall usernoted >/dev/null 2>&1 || true
 ok "$APP_DIR"
 
+# What version is running, so the update check has something to compare against.
+# A checkout falls back to the tag it is sitting on.
+JW_VERSION="${JW_VERSION:-$(git -C "$HERE" describe --tags --abbrev=0 2>/dev/null || echo unknown)}"
+printf '%s\n' "$JW_VERSION" > "$HERE/VERSION"
+
 # ------------------------------------------------------------------- 5. state
 
 say "5/6  Nạp danh sách task"

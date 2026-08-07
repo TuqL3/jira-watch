@@ -27,8 +27,9 @@ for f in "${SOURCES[@]}" install.sh; do
 done
 
 {
+  VERSION="$(git -C "$HERE" describe --tags --abbrev=0 2>/dev/null || echo unknown)"
+  printf '#!/bin/bash\nJW_VERSION=%s\n' "$VERSION"
   cat <<'HEADER'
-#!/bin/bash
 # Jira watcher — self-contained installer. No git clone needed.
 #
 #   bash install-jira-watch.sh              # installs into ~/Projects/jira-watch

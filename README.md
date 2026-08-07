@@ -158,6 +158,25 @@ macOS cache icon theo bundle id, nên `install.sh` khởi động lại `Dock`,
 `NotificationCenter` và `usernoted` sau khi dựng app. **Noti cũ vẫn giữ icon lúc
 nó được tạo** — chỉ noti mới đổi.
 
+## Tự cập nhật
+
+Mỗi 6 tiếng, watcher hỏi GitHub xem có bản mới không. Có thì **báo một noti**,
+bấm vào mở trang release. Cập nhật = chạy lại lệnh cài.
+
+Muốn nó tự cài luôn, thêm vào plist:
+
+```
+JIRA_AUTO_UPDATE=1
+```
+
+Mặc định **không** tự cài, vì `install.sh` khởi động lại `Dock` và
+`NotificationCenter` — đang làm việc mà Dock nháy thì khó chịu.
+
+Tắt hẳn: `JIRA_NO_UPDATE_CHECK=1`.
+
+Bản đang chạy nằm ở file `VERSION`. Mạng hỏng thì bỏ qua, 6 tiếng sau thử lại —
+không bao giờ làm chậm phần thông báo.
+
 ## Giới hạn đã biết
 
 - **macOS only.** Dùng `launchd` + `osascript`.
