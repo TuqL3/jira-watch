@@ -34,8 +34,12 @@ export function skillDirCandidates() {
   };
 
   const candidates = [];
-  // marketplaces/<name>/skills/jira
-  for (const m of dirs(join(plugins, 'marketplaces'))) candidates.push(join(m, 'skills/jira'));
+  // The common shapes first, so the usual machine never pays for the walk.
+  for (const m of dirs(join(plugins, 'marketplaces'))) {
+    candidates.push(join(m, 'skills/jira'));
+    // Marketplaces that host several plugins nest one level deeper.
+    for (const p of dirs(join(m, 'plugins'))) candidates.push(join(p, 'skills/jira'));
+  }
   // cache/<owner>/<plugin>/<version>/skills/jira
   for (const owner of dirs(join(plugins, 'cache'))) {
     for (const plugin of dirs(owner)) {
@@ -45,7 +49,33 @@ export function skillDirCandidates() {
   // A personal copy, which the source repo still calls jira-create.
   candidates.push(join(homedir(), '.claude/skills/jira'), join(homedir(), '.claude/skills/jira-create'));
 
-  return candidates.filter((c) => existsSync(join(c, 'scripts/lib/jira.mjs')));
+  const found = candidates.filter((c) => existsSync(join(c, 'scripts/lib/jira.mjs')));
+  if (found.length) return found;
+
+  // Nothing matched a known shape. Rather than guess at more layouts, walk
+  // ~/.claude for the file itself — plugin directory conventions keep changing.
+  return walkForSkill(join(homedir(), '.claude'), 8);
+}
+
+/** Every directory under `root` that holds scripts/lib/jira.mjs. */
+function walkForSkill(root, maxDepth) {
+  const skip = new Set(['node_modules', '.git', 'cache-tmp', 'projects', 'todos', 'shell-snapshots']);
+  const out = [];
+  const visit = (dir, depth) => {
+    if (depth > maxDepth || out.length > 20) return;
+    if (existsSync(join(dir, 'scripts/lib/jira.mjs'))) out.push(dir);
+    let entries = [];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory() && !skip.has(e.name) && !e.name.startsWith('.')) visit(join(dir, e.name), depth + 1);
+    }
+  };
+  visit(root, 0);
+  return out;
 }
 
 // Older copies of the skill exist on some machines and export a different set
@@ -106,12 +136,19 @@ export function requireAssigneesField() {
 export async function resolveSkill() {
   const candidates = skillDirCandidates();
   if (!candidates.length) {
+    const marketplaces = (() => {
+      try {
+        return readdirSync(join(homedir(), '.claude/plugins/marketplaces')).join(', ') || '(trống)';
+      } catch {
+        return '(không có thư mục marketplaces)';
+      }
+    })();
     throw new Error(
-      'Không tìm thấy plugin falcon (skill jira). Đã tìm trong:\n'
-      + '  ~/.claude/plugins/marketplaces/*/skills/jira\n'
-      + '  ~/.claude/plugins/cache/*/*/*/skills/jira\n'
-      + '  ~/.claude/skills/jira, ~/.claude/skills/jira-create\n'
-      + 'Cài ở chỗ khác thì chỉ đường: FALCON_JIRA_DIR=<path>',
+      'Không tìm thấy skill jira của plugin falcon.\n'
+      + `Đã quét toàn bộ ~/.claude tìm scripts/lib/jira.mjs — không có file nào.\n`
+      + `Marketplace đang cài: ${marketplaces}\n`
+      + 'Cài plugin falcon trước, hoặc chỉ đường:\n'
+      + '  FALCON_JIRA_DIR=<đường-dẫn-tới-skills/jira> bash install-jira-watch.sh',
     );
   }
 
