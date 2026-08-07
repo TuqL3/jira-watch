@@ -150,9 +150,17 @@ export function snapshot(issue, meName) {
     // Jira truncates the inline comment array to maxResults, so a new comment on
     // a long thread can be missing from `comments`. `total` still moves.
     commentTotal: typeof f.comment?.total === 'number' ? f.comment.total : comments.length,
-    // `name` is the username, needed to tell my own comments apart; `author` is
-    // the display name that goes in the notification.
     created: Date.parse(f.created) || 0,
+    // Every comment we can see, not just the newest: deciding "this is mine" from
+    // the last one alone silently swallowed somebody else's comment whenever I
+    // happened to comment after them. Capped so state.json cannot grow forever.
+    comments: comments.slice(-5).map((c) => ({
+      id: String(c.id),
+      name: c.author?.name || '',
+      author: c.author?.displayName || 'ai đó',
+      body: oneLine(c.body),
+      created: Date.parse(c.created) || 0,
+    })),
     lastComment: last && {
       author: last.author?.displayName || 'ai đó',
       name: last.author?.name || '',
@@ -211,18 +219,26 @@ export function diffIssue(key, before, after, meName, since = 0) {
       text: `${key}  ${before.status} → ${after.status}`,
     });
   }
+  // Which comments are new, and were any of them written by somebody else?
+  // Judging by the newest comment alone dropped a colleague's comment whenever
+  // I commented after them inside the same poll.
   const seen = new Set(before.commentIds);
-  const fresh = after.commentIds.filter((id) => !seen.has(id));
+  const visible = after.comments || (after.lastComment ? [{ ...after.lastComment, id: after.commentIds.at(-1) }] : []);
+  const fresh = visible.filter((c) => !seen.has(c.id));
+  const freshOthers = meName ? fresh.filter((c) => c.name !== meName) : fresh;
+
+  // Jira caps the comments it returns and sends the oldest first, so on a long
+  // thread the new ones are not in the list at all — only `total` moves. Those
+  // are unattributable, and staying silent about them is the worse mistake.
   const grew = (after.commentTotal ?? 0) - (before.commentTotal ?? 0);
-  const added = Math.max(fresh.length, grew > 0 ? grew : 0);
-  // My own comment is not news to me. When the thread was truncated we have no
-  // author to check, so err towards notifying rather than staying silent.
-  if (added > 0 && !mineComment) {
-    const who = after.lastComment?.author || 'ai đó';
+  const hidden = Math.max(0, grew - fresh.length);
+  const added = freshOthers.length + hidden;
+
+  if (added > 0) {
+    const pick = freshOthers.at(-1);
+    const who = pick?.author || 'ai đó';
     const n = added > 1 ? ` (${added})` : '';
-    // The body is missing only when Jira truncated the thread; fall back to the
-    // summary so the notification still says which issue moved.
-    const body = after.lastComment?.body || after.summary;
+    const body = pick?.body || after.summary;
     events.push({
       key,
       kind: 'comment',
@@ -588,6 +604,39 @@ function selftest() {
   console.assert(commented[0].title.includes('Tony'), 'comment event names the author in the title');
   console.assert(commented[0].subtitle === 'x', 'comment event puts the issue summary in the subtitle');
   console.assert(commented[0].message === 'đã fix xong nhé', 'comment event carries the body');
+
+  // The miss this was reported for: I comment after a colleague inside the same
+  // poll. Judging by the newest comment alone hid theirs completely.
+  const twoAuthors = diffIssue('ABC-1',
+    { ...base, commentIds: ['1'], commentTotal: 1 },
+    { ...base,
+      commentIds: ['1', '2', '3'],
+      commentTotal: 3,
+      comments: [
+        { id: '1', name: 'bob', author: 'Bob', body: 'cũ', created: 1 },
+        { id: '2', name: 'bob', author: 'Bob', body: 'anh xem giúp', created: 2 },
+        { id: '3', name: 'alice', author: 'Alice', body: 'ok em xem', created: 3 },
+      ] },
+    'alice');
+  console.assert(twoAuthors.length === 1, "a colleague's comment survives my own newer one");
+  console.assert(twoAuthors[0].message === 'anh xem giúp', 'and it is their text that is shown');
+
+  // Only my own new comments: still silent.
+  const onlyMine = diffIssue('ABC-1',
+    { ...base, commentIds: ['1'], commentTotal: 1 },
+    { ...base, commentIds: ['1', '2'], commentTotal: 2,
+      comments: [{ id: '2', name: 'alice', author: 'Alice', body: 'tôi tự nói', created: 2 }] },
+    'alice');
+  console.assert(onlyMine.length === 0, 'comments only from me stay silent');
+
+  // Long thread: the new comments are past the cap, so only `total` moved.
+  const pastCap = diffIssue('ABC-1',
+    { ...base, commentIds: ['1'], commentTotal: 40 },
+    { ...base, commentIds: ['1'], commentTotal: 42,
+      comments: [{ id: '1', name: 'alice', author: 'Alice', body: 'cũ', created: 1 }] },
+    'alice');
+  console.assert(pastCap.length === 1, 'invisible comments still notify');
+  console.assert(pastCap[0].title.includes('(2)'), 'and say how many');
 
   // My own comment must stay silent; someone else's must not.
   const mineBody = { ...base, commentIds: ['1', '2'], commentTotal: 2, lastComment: { author: 'Alice', name: 'alice', body: 'tôi tự comment' } };
