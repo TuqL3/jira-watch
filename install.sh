@@ -148,6 +148,15 @@ mkdir -p "$HOME/Applications"
 osacompile -o "$APP_DIR" "$HERE/JiraNotify.applescript"
 plutil -insert CFBundleIdentifier -string "local.jira.notify" "$APP_DIR/Contents/Info.plist" 2>/dev/null || true
 
+# CFBundleIconName points at an asset catalog and outranks CFBundleIconFile, so
+# on a macOS whose osacompile emits one, replacing applet.icns changes nothing.
+# Remove the name and the catalog so the icns is the only icon left.
+if plutil -extract CFBundleIconName raw "$APP_DIR/Contents/Info.plist" >/dev/null 2>&1; then
+  plutil -remove CFBundleIconName "$APP_DIR/Contents/Info.plist" >/dev/null 2>&1 || true
+  printf '  \033[33m⚠\033[0m  đã gỡ CFBundleIconName (nó đè lên icns)\n'
+fi
+rm -f "$APP_DIR/Contents/Resources/Assets.car" "$APP_DIR/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+
 # The icon ships with the installer: building one here would need iconutil,
 # which comes with the Xcode command line tools and is missing on plenty of
 # machines — that is how one ended up with the generic script icon. Downloading
