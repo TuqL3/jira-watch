@@ -19,6 +19,15 @@ red() { printf '\033[31m%s\033[0m\n' "$1"; }
 ok()  { printf '\033[32m✓\033[0m %s\n' "$1"; }
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# Under `curl … | bash` stdin is the script itself, so `read` hits EOF and
+# set -e kills the run halfway through. Prompts use the keyboard directly.
+# Testing `-r /dev/tty` is not enough — the file can exist and still fail to
+# open when there is no controlling terminal — so try opening it for real.
+# The braces matter: `exec 3< /dev/tty 2>/dev/null` still lets bash print its
+# own "Device not configured" before the redirection applies.
+HAS_TTY=0
+if { exec 3< /dev/tty; } 2>/dev/null; then HAS_TTY=1; fi
+
 # --------------------------------------------------------------- 1. the machine
 
 say "1/6  Kiểm môi trường"
@@ -56,11 +65,24 @@ done
 if [ -n "$ENV_FILE" ]; then
   ok "đã có JIRA_TOKEN trong $ENV_FILE"
 else
-  echo "  Tạo Personal Access Token: mở Jira → avatar → Profile → Personal Access Tokens"
-  printf '  Dán token vào đây (không hiện ra màn hình): '
-  read -rs TOKEN
-  echo
-  [ -n "$TOKEN" ] || { red "Token rỗng."; exit 1; }
+  TOKEN="${JIRA_TOKEN:-}"
+
+  if [ -z "$TOKEN" ] && [ "$HAS_TTY" = 1 ]; then
+    echo "  Tạo Personal Access Token: mở Jira → avatar → Profile → Personal Access Tokens"
+    printf '  Dán token vào đây (không hiện ra màn hình): '
+    read -rs TOKEN <&3 || TOKEN=""
+    echo
+  fi
+
+  if [ -z "$TOKEN" ]; then
+    red "Chưa có token để dùng."
+    echo "  Chạy qua ống (curl | bash) thì stdin là chính script, không gõ tay được."
+    echo "  Cách 1 — truyền sẵn token:"
+    echo "    JIRA_TOKEN=<token> bash -c \"\$(curl -fsSL <url>)\""
+    echo "  Cách 2 — tải về rồi chạy:"
+    echo "    curl -fsSLO <url> && bash install-jira-watch.sh"
+    exit 1
+  fi
   # Prefer the falcon skill's .env so falcon:jira can use the same token.
   ENV_FILE="$FALCON_JIRA_DIR/.env"
   touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
@@ -220,8 +242,12 @@ Lệnh hay dùng:
 
 EOF
 
-printf 'Gửi 1 noti thử ngay bây giờ? [Y/n] '
-read -r ANSWER
+# Same pipe problem as the token prompt: with no keyboard, just send it.
+ANSWER=y
+if [ "$HAS_TTY" = 1 ]; then
+  printf 'Gửi 1 noti thử ngay bây giờ? [Y/n] '
+  read -r ANSWER <&3 || ANSWER=y
+fi
 if [ "${ANSWER:-y}" != "n" ] && [ "${ANSWER:-y}" != "N" ]; then
   printf 'post\nJiraNotify\nCài đặt xong\nBấm vào đây để mở Jira\n%s\n' "$BASE_URL" > "$HOME/.jira-notify-payload"
   "$APP_DIR/Contents/MacOS/applet" || true
