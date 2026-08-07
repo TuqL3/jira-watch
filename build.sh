@@ -13,7 +13,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$HERE/dist/install-jira-watch.sh"
-SOURCES=(watch.mjs act.mjs env.mjs JiraNotify.applescript uninstall.sh)
+SOURCES=(watch.mjs act.mjs env.mjs jira.mjs JiraNotify.applescript uninstall.sh)
 
 mkdir -p "$HERE/dist"
 

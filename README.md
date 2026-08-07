@@ -25,7 +25,13 @@ curl -fsSL https://github.com/TuqL3/jira-watch/releases/latest/download/install-
 ```
 
 File tải về tự chứa toàn bộ mã nguồn, giải nén vào `~/Projects/jira-watch` rồi cài.
-Không cần git, không cần token.
+Không cần git, không cần clone.
+
+Cài không qua terminal tương tác (hoặc muốn khỏi gõ tay):
+
+```bash
+JIRA_TOKEN=<token> bash -c "$(curl -fsSL https://github.com/TuqL3/jira-watch/releases/latest/download/install-jira-watch.sh)"
+```
 
 Ngại chạy thẳng script từ Internet thì tải về đọc trước:
 
@@ -41,7 +47,7 @@ INTERVAL=15 bash install-jira-watch.sh                 # đổi nhịp quét
 EXTRACT_ONLY=1 bash install-jira-watch.sh              # chỉ giải nén, xem trước
 ```
 
-**Cách 2 — clone repo** (cần được mời vào repo private):
+**Cách 2 — clone repo:**
 
 ```bash
 git clone https://github.com/TuqL3/jira-watch.git ~/Projects/jira-watch
@@ -49,8 +55,8 @@ cd ~/Projects/jira-watch
 ./install.sh
 ```
 
-Cần trước: macOS, Node >= 18, plugin `falcon` đã cài, và một Personal Access Token
-Jira (`<jira-cua-ban>` → avatar → Profile → Personal Access Tokens).
+Cần trước: macOS, Node >= 18, và một Personal Access Token Jira
+(mở Jira → avatar → Profile → Personal Access Tokens). Không cần plugin nào.
 
 Script sẽ hỏi token, dựng app thông báo, nạp danh sách task, bật lịch chạy.
 Khoảng 1 phút.
@@ -87,7 +93,7 @@ Mặc định **60 giây**. Muốn khác:
 INTERVAL=15 ./install.sh
 ```
 
-Cân nhắc trước khi hạ: `<jira-cua-ban>` là instance chung.
+Cân nhắc trước khi hạ: Jira là instance dùng chung cả công ty.
 
 | Người dùng | 60s | 15s |
 |---|---|---|
@@ -106,7 +112,8 @@ không sót sự kiện.
 | `JIRA_INCLUDE_MINE=1` | báo cả thay đổi do chính bạn |
 | `JIRA_SOUND=1` | kêu 1 tiếng mỗi sự kiện |
 | `JIRA_NOTIFIER=osascript` | không dùng app riêng — noti vẫn hiện nhưng **bấm không mở được task** |
-| `FALCON_JIRA_DIR=<path>` | plugin falcon nằm chỗ khác |
+| `JIRA_BASE_URL=<url>` | Jira khác instance mặc định |
+| `JIRA_WATCH_ENV=<path>` | file .env nằm chỗ khác |
 
 ## Vì sao cần `JiraNotify.app`
 
@@ -128,11 +135,12 @@ launchd ──(mỗi 60s)──> watch.mjs
                           │  có khác → hỏi changelog xem ai sửa
                           │  không phải bạn → ghi payload, chạy JiraNotify.app
                           ▼
-                       notification ──(bấm)──> mở <jira-cua-ban>/browse/ABC-xxx
+                       notification ──(bấm)──> mở <jira>/browse/ABC-xxx
 ```
 
-Token, base URL và tầng auth lấy từ plugin `falcon` (`skills/jira/scripts/lib/jira.mjs`)
-thay vì viết lại — token nằm một chỗ, và skill `falcon:jira` (tạo task) dùng chung.
+Client Jira nằm trong `jira.mjs` (~90 dòng: đọc config, fetch kèm Bearer, `myself`).
+Trước đây phần này mượn thư viện của plugin `falcon` và gãy hai lần trong một giờ khi
+thư viện đó được sắp xếp lại — nên giờ tự chứa, không phụ thuộc plugin nào.
 
 ## Giới hạn đã biết
 
@@ -170,7 +178,7 @@ Kiểm bundle khớp mã nguồn:
 
 ```bash
 EXTRACT_ONLY=1 TARGET=/tmp/jw bash dist/install-jira-watch.sh
-for f in watch.mjs act.mjs env.mjs JiraNotify.applescript uninstall.sh; do
+for f in watch.mjs act.mjs env.mjs jira.mjs JiraNotify.applescript uninstall.sh; do
   diff -q "$f" "/tmp/jw/$f" || echo "LỆCH: $f"
 done
 ```
@@ -178,14 +186,15 @@ done
 ## Kiểm tra code
 
 ```bash
-node watch.mjs --selftest    # 34 assert, không cần mạng
-node act.mjs   --selftest    # 11 assert
+node watch.mjs --selftest    # logic phát hiện thay đổi
+node act.mjs   --selftest    # merge/remove assignee
+node jira.mjs  --selftest    # parse .env, config
 ```
 
 Fail thì exit code khác 0 (`console.assert` một mình không làm được điều đó).
 
 ## Field riêng của team
 
-Team dùng custom field **Assignees** (`customfield_XXXXX`), không dùng field
-`assignee` chuẩn của Jira — field đó luôn rỗng. Mọi thao tác assign đều **thêm vào
+Team dùng custom field **Assignees**, không dùng field `assignee` chuẩn của Jira —
+field đó luôn rỗng. `install.sh` tự hỏi Jira để tìm id của nó. Mọi thao tác assign đều **thêm vào
 mảng**, không ghi đè, để không đá đồng nghiệp ra khỏi task.

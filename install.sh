@@ -12,7 +12,6 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$HOME/Applications/JiraNotify.app"
 PLIST="$HOME/Library/LaunchAgents/com.jira-watch.plist"
-FALCON_JIRA_DIR="${FALCON_JIRA_DIR:-$HOME/.claude/plugins/marketplaces/falcon/skills/jira}"
 INTERVAL="${INTERVAL:-60}"
 
 red() { printf '\033[31m%s\033[0m\n' "$1"; }
@@ -41,42 +40,22 @@ NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]')"
 [ "$NODE_MAJOR" -ge 18 ] || { red "Cần Node >= 18, đang có $($NODE_BIN -v). fetch() không có ở bản cũ hơn."; exit 1; }
 ok "node $($NODE_BIN -v) tại $NODE_BIN"
 
-# The Jira client lives in the falcon plugin; without it there is no auth layer.
-# Where the plugin sits differs per machine (marketplace install vs dev
-# checkout, and the version hash in the cache path changes on every update), so
-# let env.mjs do the search instead of guessing one path here.
-# resolveSkill also loads each candidate and checks its exports, so an old copy
-# of the skill is skipped here exactly as it is at runtime.
-RESOLVE_OUT="$(FALCON_JIRA_DIR="${FALCON_JIRA_DIR:-}" "$NODE_BIN" --input-type=module -e "
-const { resolveSkill } = await import('$HERE/env.mjs');
-process.stdout.write((await resolveSkill()).dir);
-" 2>&1)" && FALCON_JIRA_DIR="$RESOLVE_OUT" || FALCON_JIRA_DIR=""
-
-[ -n "$FALCON_JIRA_DIR" ] && [ -f "$FALCON_JIRA_DIR/scripts/lib/jira.mjs" ] || {
-  red "Không dùng được skill jira của plugin falcon."
-  # Show the resolver's own message: it names every copy it rejected and why.
-  # Hiding it behind 2>/dev/null was what made this hard to diagnose.
-  printf '%s\n' "$RESOLVE_OUT" | sed 's/^/  /'
-  echo
-  echo "  Chỉ đường thủ công nếu bạn biết bản nào đúng:"
-  echo "    FALCON_JIRA_DIR=<đường-dẫn-tới-skills/jira> bash install-jira-watch.sh"
-  exit 1
-}
-ok "plugin falcon: $FALCON_JIRA_DIR"
+ok "không cần plugin nào — jira-watch tự chứa client Jira"
 
 # ------------------------------------------------------------------- 2. token
 
-say "2/6  Token Jira"
+say "2/6  Địa chỉ Jira và token"
 
-ENV_FILE=""
-for f in "$FALCON_JIRA_DIR/.env" "$HERE/.env"; do
-  if [ -f "$f" ] && grep -qE '^[[:space:]]*JIRA_TOKEN[[:space:]]*=[[:space:]]*\S' "$f"; then
-    ENV_FILE="$f"
-    break
-  fi
-done
+ENV_FILE="$HERE/.env"
+touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
 
-if [ -n "$ENV_FILE" ]; then
+# The instance is baked into jira.mjs; only write a line here when overriding.
+if [ -n "${JIRA_BASE_URL:-}" ] && ! grep -qE '^[[:space:]]*JIRA_BASE_URL[[:space:]]*=' "$ENV_FILE"; then
+  printf 'JIRA_BASE_URL=%s\n' "$JIRA_BASE_URL" >> "$ENV_FILE"
+  ok "Jira (ghi đè): $JIRA_BASE_URL"
+fi
+
+if grep -qE '^[[:space:]]*JIRA_TOKEN[[:space:]]*=[[:space:]]*\S' "$ENV_FILE"; then
   ok "đã có JIRA_TOKEN trong $ENV_FILE"
 else
   TOKEN="${JIRA_TOKEN:-}"
@@ -98,9 +77,6 @@ else
     echo "    curl -fsSLO <url> && bash install-jira-watch.sh"
     exit 1
   fi
-  # Prefer the falcon skill's .env so falcon:jira can use the same token.
-  ENV_FILE="$FALCON_JIRA_DIR/.env"
-  touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
   printf 'JIRA_TOKEN=%s\n' "$TOKEN" >> "$ENV_FILE"
   unset TOKEN
   ok "đã ghi $ENV_FILE (chmod 600)"
@@ -108,7 +84,7 @@ fi
 
 # A token that does not authenticate makes every later step fail confusingly.
 say "3/6  Thử kết nối Jira"
-PROBE="$(FALCON_JIRA_DIR="$FALCON_JIRA_DIR" "$NODE_BIN" --input-type=module -e "
+PROBE="$("$NODE_BIN" --input-type=module -e "
 const { connect } = await import('$HERE/env.mjs');
 const { fetchMyself, jiraFetch, env } = await connect();
 const me = await fetchMyself(env);
@@ -185,7 +161,7 @@ ok "$APP_DIR"
 
 say "5/6  Nạp danh sách task"
 
-FALCON_JIRA_DIR="$FALCON_JIRA_DIR" "$NODE_BIN" "$HERE/watch.mjs" --init
+"$NODE_BIN" "$HERE/watch.mjs" --init
 
 # ------------------------------------------------------------------ 6. launchd
 
@@ -207,12 +183,6 @@ cat > "$PLIST" <<PLIST_EOF
     <string>$NODE_BIN</string>
     <string>$HERE/watch.mjs</string>
   </array>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>FALCON_JIRA_DIR</key>
-    <string>$FALCON_JIRA_DIR</string>
-  </dict>
 
   <key>StartInterval</key>
   <integer>$INTERVAL</integer>
