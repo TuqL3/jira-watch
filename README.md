@@ -18,15 +18,22 @@ Bắt 3 loại thay đổi trên task bạn được assign, report, hoặc watc
 
 ## Cài
 
-**Cách 1 — 1 file, không cần clone.** Nhận `install-jira-watch.sh` (Slack, email,
-AirDrop) rồi:
+**Cách 1 — một dòng lệnh:**
 
 ```bash
-bash install-jira-watch.sh
+curl -fsSL https://github.com/TuqL3/jira-watch/releases/latest/download/install-jira-watch.sh | bash
 ```
 
-File này tự chứa toàn bộ mã nguồn, giải nén vào `~/Projects/jira-watch` rồi cài.
-Không cần quyền vào repo, không cần git.
+File tải về tự chứa toàn bộ mã nguồn, giải nén vào `~/Projects/jira-watch` rồi cài.
+Không cần git, không cần token.
+
+Ngại chạy thẳng script từ Internet thì tải về đọc trước:
+
+```bash
+curl -fsSLO https://github.com/TuqL3/jira-watch/releases/latest/download/install-jira-watch.sh
+less install-jira-watch.sh
+bash install-jira-watch.sh
+```
 
 ```bash
 TARGET=~/tools/jira-watch bash install-jira-watch.sh   # đổi chỗ cài
@@ -137,17 +144,27 @@ thay vì viết lại — token nằm một chỗ, và skill `falcon:jira` (tạ
 - **Đường dẫn node cắm vào plist lúc cài.** Nâng node (nvm) là gãy — chạy lại `./install.sh`. Lỗi sẽ hiện trong `watch.err.log`.
 - **`act.mjs` chưa được test ghi thật nhiều.** Dùng `--dry-run` trước khi tin.
 
-## Phát cho người khác
+## Phát bản mới
+
+```bash
+./release.sh v1.0.1 "Sửa lỗi X"
+```
+
+Dựng bundle → tạo tag → tạo GitHub Release → upload bundle làm asset. Từ chối chạy
+nếu working tree còn thay đổi chưa commit, vì như vậy là phát hành thứ không nằm
+trên commit nào.
+
+Xong là `releases/latest/download/install-jira-watch.sh` trỏ sang bản mới, lệnh
+`curl` ở trên không đổi.
+
+Chỉ dựng bundle mà không phát hành:
 
 ```bash
 ./build.sh          # -> dist/install-jira-watch.sh
 ```
 
-Gửi đúng file đó. Nó nhúng nguyên văn `watch.mjs`, `act.mjs`, `env.mjs`,
-`JiraNotify.applescript`, `uninstall.sh` — không tải thêm gì từ mạng ngoài icon.
-
-`dist/` không commit. **Sửa mã nguồn thì phải chạy lại `build.sh`** — bản bundle là
-bản sao, bản sao cũ tệ hơn không có bản sao.
+`dist/` **không commit**. File sinh ra nằm trong git sẽ cũ đi ngay khi ai đó sửa mã
+nguồn mà quên dựng lại; asset gắn với tag thì luôn khớp đúng tag đó.
 
 Kiểm bundle khớp mã nguồn:
 
