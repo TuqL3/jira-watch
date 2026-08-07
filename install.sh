@@ -19,6 +19,14 @@ INTERVAL="${INTERVAL:-60}"
 # Jira's own /images/64jira.png is 64px, which upscales badly.
 ICON_URL="${ICON_URL:-https://cdn-icons-png.flaticon.com/512/5968/5968875.png}"
 
+# Bump this to give the app a fresh identity. macOS caches an app's icon and
+# its notification settings per bundle id, and on one machine that cache kept
+# serving the generic applet icon no matter what the bundle contained. A new id
+# has nothing cached against it — at the cost of re-granting notification
+# permission on every machine.
+BUNDLE_ID="local.jira.notify.v2"
+OLD_BUNDLE_IDS="local.jira.notify"
+
 red() { printf '\033[31m%s\033[0m\n' "$1"; }
 ok()  { printf '\033[32m✓\033[0m %s\n' "$1"; }
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -143,10 +151,17 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 # the generic applet icon everywhere.
 [ -d "$APP_DIR" ] && "$LSREGISTER" -u "$APP_DIR" >/dev/null 2>&1 || true
 
+# Drop the notification settings left behind by ids we no longer use, so the
+# permission list does not fill up with dead entries.
+for old in $OLD_BUNDLE_IDS; do
+  defaults read com.apple.ncprefs 2>/dev/null | grep -q "$old" && \
+    printf '  (bundle id cũ %s vẫn còn trong danh sách Notifications — xoá tay nếu thấy vướng)\n' "$old" || true
+done
+
 rm -rf "$APP_DIR"
 mkdir -p "$HOME/Applications"
 osacompile -o "$APP_DIR" "$HERE/JiraNotify.applescript"
-plutil -insert CFBundleIdentifier -string "local.jira.notify" "$APP_DIR/Contents/Info.plist" 2>/dev/null || true
+plutil -insert CFBundleIdentifier -string "$BUNDLE_ID" "$APP_DIR/Contents/Info.plist" 2>/dev/null || true
 
 # CFBundleIconName points at an asset catalog and outranks CFBundleIconFile, so
 # on a macOS whose osacompile emits one, replacing applet.icns changes nothing.
