@@ -183,11 +183,17 @@ rm -rf "$ICON_TMP"
 codesign --force --deep -s - "$APP_DIR" >/dev/null 2>&1 || true
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" >/dev/null 2>&1 || true
 
-# macOS caches app icons, and notifications read from that cache. Reinstalling
-# over the same bundle id otherwise keeps showing the icon from the first
-# install. Restarting the Dock drops the cache; it flickers for a second.
+# macOS caches app icons per bundle id, and the notification daemon keeps its
+# own copy — reinstalling over the same id otherwise keeps showing whatever icon
+# the very first install had. Both daemons relaunch by themselves; the Dock
+# flickers for a second.
+#
+# Notifications already sitting in Notification Center keep the icon they were
+# posted with, so old ones still look wrong. Only new ones change.
 touch "$APP_DIR"
 killall Dock >/dev/null 2>&1 || true
+killall NotificationCenter >/dev/null 2>&1 || true
+killall usernoted >/dev/null 2>&1 || true
 ok "$APP_DIR"
 
 # ------------------------------------------------------------------- 5. state
