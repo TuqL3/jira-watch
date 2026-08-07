@@ -27,7 +27,7 @@ const STATE_PATH = join(HERE, 'state.json');
 const LOG_PATH = join(HERE, 'watch.log');
 const ERR_PATH = join(HERE, 'watch.err.log');
 const MAX_LOG_LINES = 500;
-const FIELDS = ['key', 'summary', 'status', 'updated', 'comment', ASSIGNEES_FIELD].join(',');
+const FIELDS = ['key', 'summary', 'status', 'created', 'updated', 'comment', ASSIGNEES_FIELD].join(',');
 const WINDOW_MINUTES = 90;
 
 const args = new Set(process.argv.slice(2));
@@ -104,10 +104,12 @@ export function snapshot(issue, meName) {
     commentTotal: typeof f.comment?.total === 'number' ? f.comment.total : comments.length,
     // `name` is the username, needed to tell my own comments apart; `author` is
     // the display name that goes in the notification.
+    created: Date.parse(f.created) || 0,
     lastComment: last && {
       author: last.author?.displayName || 'ai đó',
       name: last.author?.name || '',
       body: oneLine(last.body),
+      created: Date.parse(last.created) || 0,
     },
     mine: assignees.some((u) => u && (u.name === meName || u.key === meName)),
   };
@@ -117,17 +119,38 @@ export function snapshot(issue, meName) {
  * Compare two snapshots of the same issue and describe what changed.
  * `before` is null the first time we ever see an issue.
  */
-export function diffIssue(key, before, after, meName) {
+export function diffIssue(key, before, after, meName, since = 0) {
   const events = [];
   // The issue key alone says nothing about which task moved, so every
   // notification carries the summary in one of its three lines.
   const summary = oneLine(after.summary, 60);
+  const mineComment = meName && after.lastComment?.name === meName;
 
   if (!before) {
-    // Only worth announcing a brand-new issue if it landed on me.
-    if (after.mine) {
-      events.push({ key, kind: 'assigned', title: key, subtitle: 'Bạn được assign', message: after.summary, text: `Bạn được assign ${key}` });
+    // First sight. There is nothing to diff against, so timestamps decide what
+    // actually happened: an issue we have never seen enters the window either
+    // because it was just created, or because somebody touched an old one.
+    //
+    // Treating "I am in Assignees" as "I was just assigned" was wrong — a task
+    // from last year that someone comments on would announce itself as a new
+    // assignment, and a comment on an old issue we only report or watch would
+    // say nothing at all.
+    if (after.created && after.created >= since) {
+      if (after.mine) {
+        events.push({ key, kind: 'assigned', title: key, subtitle: 'Bạn được assign', message: summary, text: `Bạn được assign ${key}` });
+      }
+    } else if (after.lastComment?.created >= since && !mineComment) {
+      const who = after.lastComment.author;
+      events.push({
+        key,
+        kind: 'comment',
+        title: `${key} · ${who}`,
+        subtitle: summary,
+        message: after.lastComment.body || summary,
+        text: `${key}  comment mới · ${who}: ${after.lastComment.body}`,
+      });
     }
+    // Anything else: record the snapshot quietly and diff properly next time.
     return events;
   }
   if (before.status !== after.status) {
@@ -146,7 +169,6 @@ export function diffIssue(key, before, after, meName) {
   const added = Math.max(fresh.length, grew > 0 ? grew : 0);
   // My own comment is not news to me. When the thread was truncated we have no
   // author to check, so err towards notifying rather than staying silent.
-  const mineComment = meName && after.lastComment?.name === meName;
   if (added > 0 && !mineComment) {
     const who = after.lastComment?.author || 'ai đó';
     const n = added > 1 ? ` (${added})` : '';
@@ -366,6 +388,10 @@ async function main() {
   if (override && !/^\d+[mhd]$/.test(override)) throw new Error(`--window must look like 90m, 6h or 30d — got ${override}`);
   const window = override || (args.has('--init') ? '90d' : `${WINDOW_MINUTES}m`);
   const recent = `updated >= -${window}`;
+  // Same cutoff in milliseconds, so a first-seen issue can be judged by when it
+  // was created or last commented on rather than by guesswork.
+  const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[window.slice(-1)];
+  const since = Date.now() - Number(window.slice(0, -1)) * unit;
   if (verbose) console.log('window:', window);
   // The custom field may or may not be indexed for JQL; fall back if it is not.
   // JQL addresses a custom field as cf[<number>], not by its customfield_ id.
@@ -388,7 +414,7 @@ async function main() {
   for (const issue of issues) {
     const snap = snapshot(issue, meName);
     after[issue.key] = snap;
-    events.push(...diffIssue(issue.key, before[issue.key] || null, snap, includeMine ? null : meName));
+    events.push(...diffIssue(issue.key, before[issue.key] || null, snap, includeMine ? null : meName, since));
   }
   if (!includeMine) events = await dropMyOwnChanges(events, meName, jiraFetch, env);
 
@@ -500,6 +526,39 @@ function selftest() {
   console.assert(diffIssue('ABC-1', base, mineBody, 'bob').length === 1, "someone else's comment still notifies");
   console.assert(diffIssue('ABC-1', base, mineBody, null).length === 1, '--include-mine restores my own comments');
 
+  // A year-old issue that somebody touches today enters the window for the
+  // first time. It must not announce itself as a new assignment, and a comment
+  // on it must not go unreported just because we have never seen the issue.
+  const YEAR_AGO = 1_000_000;
+  const NOW = 9_000_000;
+  const SINCE = 8_000_000;
+  const oldIssue = { ...base, created: YEAR_AGO, mine: true };
+
+  const oldTouched = diffIssue('ABC-9', null, oldIssue, 'alice', SINCE);
+  console.assert(oldTouched.length === 0, 'an old issue with no recent comment stays silent');
+
+  const oldCommented = diffIssue('ABC-9', null, {
+    ...oldIssue,
+    lastComment: { author: 'Bob', name: 'bob', body: 'ai xem giúp', created: NOW },
+  }, 'alice', SINCE);
+  console.assert(oldCommented.length === 1 && oldCommented[0].kind === 'comment',
+    'a comment on a first-seen old issue is reported as a comment');
+  console.assert(!oldCommented.some((e) => e.kind === 'assigned'),
+    'a first-seen old issue never claims to be a new assignment');
+
+  const oldCommentedByMe = diffIssue('ABC-9', null, {
+    ...oldIssue,
+    lastComment: { author: 'Alice', name: 'alice', body: 'tôi tự nói', created: NOW },
+  }, 'alice', SINCE);
+  console.assert(oldCommentedByMe.length === 0, 'my own comment on an old issue stays silent');
+
+  // A genuinely new issue assigned to me still announces itself.
+  const brandNew = diffIssue('ABC-9', null, { ...base, created: NOW, mine: true }, 'alice', SINCE);
+  console.assert(brandNew.length === 1 && brandNew[0].kind === 'assigned', 'a new issue assigned to me notifies');
+
+  const brandNewNotMine = diffIssue('ABC-9', null, { ...base, created: NOW, mine: false }, 'alice', SINCE);
+  console.assert(brandNewNotMine.length === 0, 'a new issue not assigned to me stays silent');
+
   // A truncated thread has no author to check; announcing beats staying silent.
   const unknown = { ...base, commentTotal: 41, lastComment: null };
   console.assert(diffIssue('ABC-1', { ...base, commentTotal: 40 }, unknown, 'alice').length === 1, 'unattributable comment still notifies');
@@ -528,8 +587,10 @@ function selftest() {
   console.assert(taken.length === 1 && taken[0].kind === 'assigned', 'being assigned must fire');
 
   // An issue seen for the first time is only interesting when it is mine.
+  // Being in Assignees is not by itself news — see the first-seen cases below.
   console.assert(diffIssue('ABC-1', null, base).length === 0, 'unseen + not mine = silent');
-  console.assert(diffIssue('ABC-1', null, { ...base, mine: true }).length === 1, 'unseen + mine = notify');
+  console.assert(diffIssue('ABC-1', null, { ...base, mine: true }).length === 0,
+    'unseen + mine but no timestamps = silent, not a phantom assignment');
 
   // A comment written by me still counts as new; dedupe is by id, not author.
   const twice = diffIssue('ABC-1', { ...base, commentIds: ['1', '2'] }, { ...base, commentIds: ['1', '2'] });
