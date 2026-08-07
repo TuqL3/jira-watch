@@ -83,6 +83,54 @@ export function isNewerVersion(latest, current) {
   return false;
 }
 
+/**
+ * What a first-seen issue's changelog says happened inside the window.
+ *
+ * An issue we have no snapshot for gives us nothing to diff, so a status change
+ * or an assignment on a years-old task would otherwise pass in silence. The
+ * changelog holds both the old and the new value, which is exactly what the
+ * notification needs anyway.
+ */
+export function eventsFromChangelog(key, snap, changelog, since, meName, assigneesField) {
+  const events = [];
+  const summary = oneLine(snap.summary, 60);
+
+  for (const h of changelog?.histories || []) {
+    if ((Date.parse(h.created) || 0) < since) continue;
+    if (meName && h.author?.name === meName) continue; // my own edit is not news
+
+    for (const it of h.items || []) {
+      if (it.field === 'status' || it.fieldId === 'status') {
+        events.push({
+          key,
+          kind: 'status',
+          title: key,
+          subtitle: `${it.fromString || '?'} → ${it.toString || '?'}`,
+          message: summary,
+          text: `${key}  ${it.fromString || '?'} → ${it.toString || '?'}`,
+        });
+      }
+
+      const isAssignees = it.fieldId === assigneesField || it.field === 'Assignees';
+      // Only when I appear on the new side and not the old one — otherwise this
+      // fires for every reshuffle of the field.
+      //
+      // Compare against `to`/`from`, which hold usernames; `toString` holds
+      // display names. Split rather than substring-match, or "tung" would match
+      // "tunglv".
+      if (isAssignees && meName) {
+        const names = (v) => String(v || '').split(/[,\s]+/).filter(Boolean);
+        const inTo = names(it.to).includes(meName);
+        const inFrom = names(it.from).includes(meName);
+        if (inTo && !inFrom) {
+          events.push({ key, kind: 'assigned', title: key, subtitle: 'Bạn được assign', message: summary, text: `Bạn được assign ${key}` });
+        }
+      }
+    }
+  }
+  return events;
+}
+
 /** Last `max` non-empty lines, oldest first. Empty input stays empty. */
 export function keepLast(text, max) {
   const rows = String(text || '').split('\n').filter((r) => r !== '');
@@ -416,6 +464,27 @@ async function main() {
     after[issue.key] = snap;
     events.push(...diffIssue(issue.key, before[issue.key] || null, snap, includeMine ? null : meName, since));
   }
+  // A first-seen issue that produced nothing was touched in some way the
+  // snapshot cannot show — a status move, or being added to Assignees. Ask its
+  // changelog. Rare, so the extra call costs nothing on a normal poll.
+  const explained = new Set(events.map((e) => e.key));
+  for (const issue of issues) {
+    if (before[issue.key] || explained.has(issue.key)) continue;
+    try {
+      const { status, json } = await jiraFetch(
+        `/rest/api/2/issue/${encodeURIComponent(issue.key)}?expand=changelog&fields=summary`,
+        { env },
+      );
+      if (status !== 200) continue;
+      events.push(...eventsFromChangelog(
+        issue.key, after[issue.key], json.changelog, since,
+        includeMine ? null : meName, ASSIGNEES_FIELD,
+      ));
+    } catch {
+      // An unreachable changelog just means this one issue stays quiet.
+    }
+  }
+
   if (!includeMine) events = await dropMyOwnChanges(events, meName, jiraFetch, env);
 
   // Issues that fell outside the window keep their last known snapshot, so a
@@ -558,6 +627,39 @@ function selftest() {
 
   const brandNewNotMine = diffIssue('ABC-9', null, { ...base, created: NOW, mine: false }, 'alice', SINCE);
   console.assert(brandNewNotMine.length === 0, 'a new issue not assigned to me stays silent');
+
+  // A first-seen old issue that was moved or handed to me: the changelog is the
+  // only place that knows, and it carries both the old and the new value.
+  const CL_SINCE = 8_000_000;
+  const oldCl = {
+    histories: [
+      { created: '1970-01-01T00:00:01.000+0000', author: { name: 'bob' },
+        items: [{ field: 'status', fromString: 'Backlog', toString: 'To Do' }] },
+      { created: new Date(9_000_000).toISOString(), author: { name: 'bob' },
+        items: [{ field: 'status', fromString: 'To Do', toString: 'In Progress' }] },
+      { created: new Date(9_100_000).toISOString(), author: { name: 'bob' },
+        items: [{ field: 'Assignees', fieldId: 'customfield_99999', from: 'bob', to: 'bob,alice' }] },
+    ],
+  };
+  const fromCl = eventsFromChangelog('ABC-9', base, oldCl, CL_SINCE, 'alice', 'customfield_99999');
+  console.assert(fromCl.length === 2, 'only entries inside the window count');
+  console.assert(fromCl[0].subtitle === 'To Do → In Progress', 'status carries both sides');
+  console.assert(fromCl[1].kind === 'assigned', 'being added to Assignees notifies');
+
+  // My own edits, and reshuffles that do not add me, must stay quiet.
+  console.assert(eventsFromChangelog('ABC-9', base, oldCl, CL_SINCE, 'bob', 'customfield_99999').length === 0,
+    "the author's own changes are not news to them");
+
+  const reshuffle = { histories: [{ created: new Date(9_000_000).toISOString(), author: { name: 'bob' },
+    items: [{ field: 'Assignees', fieldId: 'customfield_99999', from: 'bob,alice', to: 'alice,carol' }] }] };
+  console.assert(eventsFromChangelog('ABC-9', base, reshuffle, CL_SINCE, 'alice', 'customfield_99999').length === 0,
+    'already on the issue before the change = not a new assignment');
+
+  // Usernames must be compared whole: "tung" is not "tunglv".
+  const prefix = { histories: [{ created: new Date(9_000_000).toISOString(), author: { name: 'bob' },
+    items: [{ field: 'Assignees', fieldId: 'customfield_99999', from: '', to: 'tunglv' }] }] };
+  console.assert(eventsFromChangelog('ABC-9', base, prefix, CL_SINCE, 'tung', 'customfield_99999').length === 0,
+    'a username that is a prefix of another does not match');
 
   // A truncated thread has no author to check; announcing beats staying silent.
   const unknown = { ...base, commentTotal: 41, lastComment: null };
