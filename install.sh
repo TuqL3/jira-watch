@@ -47,19 +47,19 @@ ok "node $($NODE_BIN -v) tại $NODE_BIN"
 # let env.mjs do the search instead of guessing one path here.
 # resolveSkill also loads each candidate and checks its exports, so an old copy
 # of the skill is skipped here exactly as it is at runtime.
-FALCON_JIRA_DIR="$(FALCON_JIRA_DIR="${FALCON_JIRA_DIR:-}" "$NODE_BIN" --input-type=module -e "
+RESOLVE_OUT="$(FALCON_JIRA_DIR="${FALCON_JIRA_DIR:-}" "$NODE_BIN" --input-type=module -e "
 const { resolveSkill } = await import('$HERE/env.mjs');
 process.stdout.write((await resolveSkill()).dir);
-" 2>/dev/null || true)"
+" 2>&1)" && FALCON_JIRA_DIR="$RESOLVE_OUT" || FALCON_JIRA_DIR=""
 
 [ -n "$FALCON_JIRA_DIR" ] && [ -f "$FALCON_JIRA_DIR/scripts/lib/jira.mjs" ] || {
-  red "Không tìm thấy plugin falcon (hoặc chỉ có bản cũ thiếu loadEnv)."
-  echo "  Đã tìm trong:"
-  echo "    ~/.claude/plugins/marketplaces/*/skills/jira"
-  echo "    ~/.claude/plugins/cache/*/*/*/skills/jira"
-  echo "    ~/.claude/skills/jira, ~/.claude/skills/jira-create"
-  echo "  Cần cài plugin falcon trước (skill jira cung cấp lớp auth + base URL)."
-  echo "  Cài ở chỗ khác thì chỉ đường: FALCON_JIRA_DIR=<đường-dẫn> bash install-jira-watch.sh"
+  red "Không dùng được skill jira của plugin falcon."
+  # Show the resolver's own message: it names every copy it rejected and why.
+  # Hiding it behind 2>/dev/null was what made this hard to diagnose.
+  printf '%s\n' "$RESOLVE_OUT" | sed 's/^/  /'
+  echo
+  echo "  Chỉ đường thủ công nếu bạn biết bản nào đúng:"
+  echo "    FALCON_JIRA_DIR=<đường-dẫn-tới-skills/jira> bash install-jira-watch.sh"
   exit 1
 }
 ok "plugin falcon: $FALCON_JIRA_DIR"
