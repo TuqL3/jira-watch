@@ -1,0 +1,13 @@
+# Secrets — never commit
+.env
+
+# Per-machine runtime state
+state.json
+watch.log
+watch.err.log
+last-run.txt
+
+.DS_Store
+
+# Generated bundle — run ./build.sh to regenerate
+dist/

@@ -1,0 +1,174 @@
+# jira-watch
+
+Thông báo trên macOS khi task Jira của bạn có thay đổi. Bấm vào noti là mở thẳng task.
+
+```
+ABC-123 · Alice Nguyen
+Sửa màn hình báo cáo, thêm bộ lọc theo tháng
+đã fix xong rồi nhé, anh review giúp em
+```
+
+Bắt 3 loại thay đổi trên task bạn được assign, report, hoặc watch:
+
+- đổi status — `To Do → In Progress`
+- có comment mới — kèm nội dung comment
+- bạn được thêm vào Assignees
+
+**Không báo thay đổi do chính bạn gây ra.**
+
+## Cài
+
+**Cách 1 — 1 file, không cần clone.** Nhận `install-jira-watch.sh` (Slack, email,
+AirDrop) rồi:
+
+```bash
+bash install-jira-watch.sh
+```
+
+File này tự chứa toàn bộ mã nguồn, giải nén vào `~/Projects/jira-watch` rồi cài.
+Không cần quyền vào repo, không cần git.
+
+```bash
+TARGET=~/tools/jira-watch bash install-jira-watch.sh   # đổi chỗ cài
+INTERVAL=15 bash install-jira-watch.sh                 # đổi nhịp quét
+EXTRACT_ONLY=1 bash install-jira-watch.sh              # chỉ giải nén, xem trước
+```
+
+**Cách 2 — clone repo** (cần được mời vào repo private):
+
+```bash
+git clone https://github.com/TuqL3/jira-watch.git ~/Projects/jira-watch
+cd ~/Projects/jira-watch
+./install.sh
+```
+
+Cần trước: macOS, Node >= 18, plugin `falcon` đã cài, và một Personal Access Token
+Jira (`<jira-cua-ban>` → avatar → Profile → Personal Access Tokens).
+
+Script sẽ hỏi token, dựng app thông báo, nạp danh sách task, bật lịch chạy.
+Khoảng 1 phút.
+
+### Sau khi cài phải làm 1 việc bằng tay
+
+**System Settings → Notifications → JiraNotify → Allow notifications**, alert style
+chọn **Alerts**.
+
+macOS không cho script tự cấp quyền này. Chưa bật thì mọi thứ chạy đúng, log ghi
+đủ, nhưng bạn không thấy gì trên màn hình.
+
+## Dùng
+
+```bash
+node watch.mjs --verbose            # kiểm ngay, không chờ tới nhịp
+node act.mjs show     ABC-123       # status + assignees
+node act.mjs comment  ABC-123 "nội dung"
+node act.mjs assign   ABC-123       # thêm mình vào Assignees
+node act.mjs assign   ABC-123 --user bob
+node act.mjs unassign ABC-123
+tail -f watch.log                   # sự kiện đã xảy ra
+cat last-run.txt                    # còn sống không
+./uninstall.sh
+```
+
+Thêm `--dry-run` vào lệnh ghi để xem payload mà không gửi.
+
+## Nhịp quét
+
+Mặc định **60 giây**. Muốn khác:
+
+```bash
+INTERVAL=15 ./install.sh
+```
+
+Cân nhắc trước khi hạ: `<jira-cua-ban>` là instance chung.
+
+| Người dùng | 60s | 15s |
+|---|---|---|
+| 1 | 1.440 req/ngày | 5.760 |
+| 10 | 14.400 | **57.600** |
+
+Cả team để 15 giây là con số nằm chình ình trong access log của admin.
+
+Cửa sổ quét là 90 phút (rộng hơn nhịp rất nhiều) nên máy ngủ dậy vẫn bắt kịp,
+không sót sự kiện.
+
+## Tuỳ chọn
+
+| Biến | Tác dụng |
+|---|---|
+| `JIRA_INCLUDE_MINE=1` | báo cả thay đổi do chính bạn |
+| `JIRA_SOUND=1` | kêu 1 tiếng mỗi sự kiện |
+| `JIRA_NOTIFIER=osascript` | không dùng app riêng — noti vẫn hiện nhưng **bấm không mở được task** |
+| `FALCON_JIRA_DIR=<path>` | plugin falcon nằm chỗ khác |
+
+## Vì sao cần `JiraNotify.app`
+
+`osascript` gửi noti được, nhưng noti đó thuộc về Script Editor — bấm vào không
+làm gì cả. Muốn bấm mở task thì noti phải thuộc về một app mình kiểm soát.
+
+`JiraNotify.app` là applet AppleScript ~40 dòng, `install.sh` tự biên dịch tại máy
+bạn. Không dựng sẵn rồi phát vì chữ ký ad-hoc chỉ hợp lệ trên máy tạo ra nó.
+
+`terminal-notifier` đã thử và loại: nó trả exit code 0 nhưng không giao noti nào
+trên macOS 15.
+
+## Cách hoạt động
+
+```
+launchd ──(mỗi 60s)──> watch.mjs
+                          │  1 JQL lấy task liên quan tới bạn, sửa trong 90 phút qua
+                          │  so với state.json
+                          │  có khác → hỏi changelog xem ai sửa
+                          │  không phải bạn → ghi payload, chạy JiraNotify.app
+                          ▼
+                       notification ──(bấm)──> mở <jira-cua-ban>/browse/ABC-xxx
+```
+
+Token, base URL và tầng auth lấy từ plugin `falcon` (`skills/jira/scripts/lib/jira.mjs`)
+thay vì viết lại — token nằm một chỗ, và skill `falcon:jira` (tạo task) dùng chung.
+
+## Giới hạn đã biết
+
+- **macOS only.** Dùng `launchd` + `osascript`.
+- **Bấm noti cũ sẽ mở task mới nhất.** Applet chỉ giữ 1 URL. AppleScript không cho gắn định danh vào từng noti.
+- **Thread dài** bị Jira cắt bớt comment: vẫn báo "có comment mới" nhưng tên người hiện là "ai đó".
+- **Không xác định được ai sửa thì vẫn báo.** Bỏ sót việc của người khác tệ hơn nhận thừa noti của chính mình.
+- **Assign là read-modify-write.** Hai người sửa Assignees trong cùng một giây có thể mất một thay đổi.
+- **Đường dẫn node cắm vào plist lúc cài.** Nâng node (nvm) là gãy — chạy lại `./install.sh`. Lỗi sẽ hiện trong `watch.err.log`.
+- **`act.mjs` chưa được test ghi thật nhiều.** Dùng `--dry-run` trước khi tin.
+
+## Phát cho người khác
+
+```bash
+./build.sh          # -> dist/install-jira-watch.sh
+```
+
+Gửi đúng file đó. Nó nhúng nguyên văn `watch.mjs`, `act.mjs`, `env.mjs`,
+`JiraNotify.applescript`, `uninstall.sh` — không tải thêm gì từ mạng ngoài icon.
+
+`dist/` không commit. **Sửa mã nguồn thì phải chạy lại `build.sh`** — bản bundle là
+bản sao, bản sao cũ tệ hơn không có bản sao.
+
+Kiểm bundle khớp mã nguồn:
+
+```bash
+EXTRACT_ONLY=1 TARGET=/tmp/jw bash dist/install-jira-watch.sh
+for f in watch.mjs act.mjs env.mjs JiraNotify.applescript uninstall.sh; do
+  diff -q "$f" "/tmp/jw/$f" || echo "LỆCH: $f"
+done
+```
+
+## Kiểm tra code
+
+```bash
+node watch.mjs --selftest    # 34 assert, không cần mạng
+node act.mjs   --selftest    # 11 assert
+```
+
+Fail thì exit code khác 0 (`console.assert` một mình không làm được điều đó).
+
+## Field riêng của team
+
+Team dùng custom field **Assignees** (`customfield_XXXXX`), không dùng field
+`assignee` chuẩn của Jira — field đó luôn rỗng. Mọi thao tác assign đều **thêm vào
+mảng**, không ghi đè, để không đá đồng nghiệp ra khỏi task.
