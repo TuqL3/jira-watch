@@ -214,6 +214,19 @@ fi
 #
 # Notifications already sitting in Notification Center keep the icon they were
 # posted with, so old ones still look wrong. Only new ones change.
+# Belt and braces: also set a Finder custom icon. That is a different mechanism
+# from the bundle's CFBundleIconFile — it writes an Icon\r file plus a FinderInfo
+# flag and takes priority — and it needs no Xcode tools. On one machine
+# LaunchServices kept serving a cached bundle icon no matter what; this path
+# does not go through that record.
+if [ -f "$APP_DIR/Contents/Resources/applet.icns" ]; then
+  osascript -l JavaScript -e "
+    ObjC.import('AppKit');
+    const img = \$.NSImage.alloc.initWithContentsOfFile('$APP_DIR/Contents/Resources/applet.icns');
+    if (img.js) \$.NSWorkspace.sharedWorkspace.setIconForFileOptions(img, '$APP_DIR', 0);
+  " >/dev/null 2>&1 || true
+fi
+
 touch "$APP_DIR"
 killall Dock >/dev/null 2>&1 || true
 killall NotificationCenter >/dev/null 2>&1 || true
