@@ -2,7 +2,7 @@
 # Install the Jira watcher for the current user.
 #
 #   ./install.sh              # 60s polling (the team default)
-#   INTERVAL=15 ./install.sh  # faster, only if you know what it costs Jira
+#   INTERVAL=60 ./install.sh  # gentler on a shared Jira
 #
 # Everything it touches lives under your home directory and is undone by
 # ./uninstall.sh. Nothing is installed system-wide.
@@ -12,7 +12,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$HOME/Applications/JiraNotify.app"
 PLIST="$HOME/Library/LaunchAgents/com.jira-watch.plist"
-INTERVAL="${INTERVAL:-60}"
+# 10 is launchd's floor: it throttles a job to roughly one launch every ten
+# seconds, so a smaller number changes the plist and nothing else.
+INTERVAL="${INTERVAL:-10}"
 
 # The notification icon. icon.icns ships with the installer already built from
 # this; the URL is only the fallback for a checkout that lacks the file.

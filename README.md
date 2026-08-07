@@ -43,7 +43,7 @@ bash install-jira-watch.sh
 
 ```bash
 TARGET=~/tools/jira-watch bash install-jira-watch.sh   # đổi chỗ cài
-INTERVAL=15 bash install-jira-watch.sh                 # đổi nhịp quét
+INTERVAL=60 bash install-jira-watch.sh                 # quét thưa hơn
 EXTRACT_ONLY=1 bash install-jira-watch.sh              # chỉ giải nén, xem trước
 ```
 
@@ -87,20 +87,25 @@ Thêm `--dry-run` vào lệnh ghi để xem payload mà không gửi.
 
 ## Nhịp quét
 
-Mặc định **60 giây**. Muốn khác:
+Mặc định **10 giây** — đây cũng là sàn của launchd. Đặt nhỏ hơn không có tác dụng:
+launchd chặn không cho cùng một job chạy dày hơn ~10 giây, đo thật thì
+`StartInterval=5` vẫn ra khoảng cách 7–11 giây.
+
+Muốn thưa hơn cho nhẹ Jira:
 
 ```bash
-INTERVAL=15 ./install.sh
+INTERVAL=60 ./install.sh
 ```
 
-Cân nhắc trước khi hạ: Jira là instance dùng chung cả công ty.
+Jira là instance dùng chung cả công ty:
 
-| Người dùng | 60s | 15s |
+| Người dùng | 60s | 10s |
 |---|---|---|
-| 1 | 1.440 req/ngày | 5.760 |
-| 10 | 14.400 | **57.600** |
+| 1 | 1.440 req/ngày | 8.640 |
+| 10 | 14.400 | **86.400** |
 
-Cả team để 15 giây là con số nằm chình ình trong access log của admin.
+Muốn dày hơn 10 giây thì phải đổi sang daemon chạy thường trực — launchd không làm
+được, và lúc đó mất cái lợi "mỗi lần chạy là một tiến trình sạch".
 
 Cửa sổ quét là 90 phút (rộng hơn nhịp rất nhiều) nên máy ngủ dậy vẫn bắt kịp,
 không sót sự kiện.
