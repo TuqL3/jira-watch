@@ -11,3 +11,7 @@ last-run.txt
 
 # Generated bundle — run ./build.sh to regenerate
 dist/
+
+# Per-machine runtime state (VERSION is written by install.sh)
+VERSION
+last-update-check.txt
