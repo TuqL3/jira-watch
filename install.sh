@@ -135,6 +135,14 @@ say "4/6  Dựng JiraNotify.app"
 
 # Notifications must belong to an app we own, otherwise clicking them does
 # nothing. Ad-hoc signatures are per-machine, so this is built here, not shipped.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
+# Unregister before deleting: LaunchServices otherwise keeps the old record —
+# including the icon it cached the first time — and a rebuilt app with the same
+# bundle id inherits it. On one machine that meant a correct icns on disk and
+# the generic applet icon everywhere.
+[ -d "$APP_DIR" ] && "$LSREGISTER" -u "$APP_DIR" >/dev/null 2>&1 || true
+
 rm -rf "$APP_DIR"
 mkdir -p "$HOME/Applications"
 osacompile -o "$APP_DIR" "$HERE/JiraNotify.applescript"
@@ -185,8 +193,19 @@ fi
 [ -z "$ICON_WHY" ] || printf '  \033[33m⚠\033[0m  dùng icon mặc định — %s\n' "$ICON_WHY"
 rm -rf "$ICON_TMP"
 
-codesign --force --deep -s - "$APP_DIR" >/dev/null 2>&1 || true
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" >/dev/null 2>&1 || true
+# osacompile ad-hoc signs the applet, and that signature covers applet.icns.
+# Swapping the icon afterwards invalidates it, and macOS then falls back to the
+# generic applet icon — which is exactly what happened on a machine without the
+# Xcode command line tools, where codesign cannot re-sign. If we cannot re-sign,
+# strip the signature instead: no signature beats a broken one.
+if codesign --force --deep -s - "$APP_DIR" >/dev/null 2>&1; then
+  ok "đã ký lại app (chữ ký phủ đúng icon mới)"
+elif codesign --remove-signature "$APP_DIR" >/dev/null 2>&1; then
+  printf '  \033[33m⚠\033[0m  không ký lại được — đã gỡ chữ ký để icon không bị bỏ qua\n'
+else
+  printf '  \033[33m⚠\033[0m  codesign không dùng được; icon có thể không hiện\n'
+fi
+"$LSREGISTER" -f "$APP_DIR" >/dev/null 2>&1 || true
 
 # macOS caches app icons per bundle id, and the notification daemon keeps its
 # own copy — reinstalling over the same id otherwise keeps showing whatever icon
