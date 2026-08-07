@@ -42,13 +42,25 @@ NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]')"
 ok "node $($NODE_BIN -v) tại $NODE_BIN"
 
 # The Jira client lives in the falcon plugin; without it there is no auth layer.
-[ -f "$FALCON_JIRA_DIR/scripts/lib/jira.mjs" ] || {
-  red "Không thấy plugin falcon tại $FALCON_JIRA_DIR"
+# Where the plugin sits differs per machine (marketplace install vs dev
+# checkout, and the version hash in the cache path changes on every update), so
+# let env.mjs do the search instead of guessing one path here.
+FALCON_JIRA_DIR="$(FALCON_JIRA_DIR="${FALCON_JIRA_DIR:-}" "$NODE_BIN" --input-type=module -e "
+const { SKILL_DIR } = await import('$HERE/env.mjs');
+process.stdout.write(SKILL_DIR);
+" 2>/dev/null || true)"
+
+[ -n "$FALCON_JIRA_DIR" ] && [ -f "$FALCON_JIRA_DIR/scripts/lib/jira.mjs" ] || {
+  red "Không tìm thấy plugin falcon."
+  echo "  Đã tìm trong:"
+  echo "    ~/.claude/plugins/marketplaces/*/skills/jira"
+  echo "    ~/.claude/plugins/cache/*/*/*/skills/jira"
+  echo "    ~/.claude/skills/jira, ~/.claude/skills/jira-create"
   echo "  Cần cài plugin falcon trước (skill jira cung cấp lớp auth + base URL)."
-  echo "  Đã cài ở chỗ khác thì đặt FALCON_JIRA_DIR=<đường-dẫn> rồi chạy lại."
+  echo "  Cài ở chỗ khác thì chỉ đường: FALCON_JIRA_DIR=<đường-dẫn> bash install-jira-watch.sh"
   exit 1
 }
-ok "plugin falcon"
+ok "plugin falcon: $FALCON_JIRA_DIR"
 
 # ------------------------------------------------------------------- 2. token
 
@@ -69,9 +81,10 @@ else
 
   if [ -z "$TOKEN" ] && [ "$HAS_TTY" = 1 ]; then
     echo "  Tạo Personal Access Token: mở Jira → avatar → Profile → Personal Access Tokens"
-    printf '  Dán token vào đây (không hiện ra màn hình): '
-    read -rs TOKEN <&3 || TOKEN=""
-    echo
+    echo "  Lưu ý: token sẽ hiện ra màn hình để bạn kiểm tra, và nằm lại trong"
+    echo "  lịch sử cuộn của terminal. Đóng cửa sổ terminal sau khi cài xong."
+    printf '  Dán token vào đây: '
+    read -r TOKEN <&3 || TOKEN=""
   fi
 
   if [ -z "$TOKEN" ]; then

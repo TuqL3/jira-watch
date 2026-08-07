@@ -6,7 +6,7 @@
  * from the falcon plugin's config, the field id from JIRA_ASSIGNEES_FIELD.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,9 +15,41 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 // The Jira client (auth, base URL, fetch wrapper) comes from the falcon plugin
 // rather than being duplicated here, so the token lives in one place and
-// falcon:jira keeps working. install.sh refuses to run without it.
-export const SKILL_DIR = process.env.FALCON_JIRA_DIR
-  || join(homedir(), '.claude/plugins/marketplaces/falcon/skills/jira');
+// falcon:jira keeps working.
+//
+// Where the plugin lands differs per machine: a marketplace install puts it
+// under cache/<owner>/<plugin>/<version-hash>/, while a dev checkout sits in
+// marketplaces/<name>/. The version hash changes on every plugin update, so the
+// path has to be discovered rather than written down.
+function findSkillDir() {
+  if (process.env.FALCON_JIRA_DIR) return process.env.FALCON_JIRA_DIR;
+
+  const plugins = join(homedir(), '.claude/plugins');
+  const dirs = (p) => {
+    try {
+      return readdirSync(p, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(p, d.name));
+    } catch {
+      return [];
+    }
+  };
+
+  const candidates = [];
+  // marketplaces/<name>/skills/jira
+  for (const m of dirs(join(plugins, 'marketplaces'))) candidates.push(join(m, 'skills/jira'));
+  // cache/<owner>/<plugin>/<version>/skills/jira
+  for (const owner of dirs(join(plugins, 'cache'))) {
+    for (const plugin of dirs(owner)) {
+      for (const version of dirs(plugin)) candidates.push(join(version, 'skills/jira'));
+    }
+  }
+  // A personal copy, which the source repo still calls jira-create.
+  candidates.push(join(homedir(), '.claude/skills/jira'), join(homedir(), '.claude/skills/jira-create'));
+
+  const hit = candidates.find((c) => existsSync(join(c, 'scripts/lib/jira.mjs')));
+  return hit || candidates[0] || join(plugins, 'marketplaces/falcon/skills/jira');
+}
+
+export const SKILL_DIR = findSkillDir();
 export const LIB = join(SKILL_DIR, 'scripts/lib/jira.mjs');
 
 // The falcon skill's .env comes first because falcon:jira reads it too — one
