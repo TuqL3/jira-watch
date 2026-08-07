@@ -52,6 +52,14 @@ HEADER
     printf "%s\n\n" "$DELIM"
   done
 
+  # The icon is binary, so it travels base64. Shipping it means the installer
+  # needs neither the network nor iconutil to give the app its icon.
+  if [ -f "$HERE/icon.icns" ]; then
+    printf "base64 -d > \"\$TARGET/icon.icns\" <<'%s'\n" "$DELIM"
+    base64 < "$HERE/icon.icns"
+    printf "%s\n\n" "$DELIM"
+  fi
+
   cat <<'MIDDLE'
 chmod +x "$TARGET/uninstall.sh"
 

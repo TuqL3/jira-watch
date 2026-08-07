@@ -135,8 +135,27 @@ mkdir -p "$HOME/Applications"
 osacompile -o "$APP_DIR" "$HERE/JiraNotify.applescript"
 plutil -insert CFBundleIdentifier -string "local.jira.notify" "$APP_DIR/Contents/Info.plist" 2>/dev/null || true
 
+# The icon ships with the installer: building one here would need iconutil,
+# which comes with the Xcode command line tools and is missing on plenty of
+# machines — that is how one ended up with the generic script icon. Downloading
+# and converting stays as a fallback for a checkout without the file.
 ICON_TMP="$(mktemp -d)"
-if curl -fsSL --max-time 15 "$BASE_URL/images/64jira.png" -o "$ICON_TMP/src.png" 2>/dev/null; then
+ICON_WHY=""
+if [ -f "$HERE/icon.icns" ]; then
+  cp "$HERE/icon.icns" "$APP_DIR/Contents/Resources/applet.icns"
+  ok "icon Jira ($(wc -c < "$HERE/icon.icns" | tr -d ' ') bytes, đi kèm sẵn)"
+elif ! curl -fsSL --max-time 15 "$BASE_URL/images/64jira.png" -o "$ICON_TMP/src.png" 2>"$ICON_TMP/curl.err"; then
+  ICON_WHY="không tải được $BASE_URL/images/64jira.png ($(tr -d '\n' < "$ICON_TMP/curl.err" | tail -c 80))"
+elif ! command -v iconutil >/dev/null 2>&1; then
+  # iconutil ships with the Xcode command line tools, which plenty of machines
+  # do not have. sips is part of macOS itself and converts straight to icns —
+  # one resolution instead of five, but it is a real icon.
+  if sips -s format icns "$ICON_TMP/src.png" --out "$APP_DIR/Contents/Resources/applet.icns" >/dev/null 2>&1; then
+    ok "icon Jira (qua sips — không có iconutil)"
+  else
+    ICON_WHY="không có iconutil, và sips cũng không chuyển được ảnh sang icns"
+  fi
+else
   mkdir -p "$ICON_TMP/i.iconset"
   for s in 16 32 128 256 512; do
     sips -z $s $s "$ICON_TMP/src.png" --out "$ICON_TMP/i.iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || true
@@ -144,13 +163,21 @@ if curl -fsSL --max-time 15 "$BASE_URL/images/64jira.png" -o "$ICON_TMP/src.png"
   cp "$ICON_TMP/i.iconset/icon_32x32.png"   "$ICON_TMP/i.iconset/icon_16x16@2x.png"  2>/dev/null || true
   cp "$ICON_TMP/i.iconset/icon_256x256.png" "$ICON_TMP/i.iconset/icon_128x128@2x.png" 2>/dev/null || true
   cp "$ICON_TMP/i.iconset/icon_512x512.png" "$ICON_TMP/i.iconset/icon_256x256@2x.png" 2>/dev/null || true
-  if iconutil -c icns "$ICON_TMP/i.iconset" -o "$ICON_TMP/applet.icns" 2>/dev/null; then
+
+  if ! iconutil -c icns "$ICON_TMP/i.iconset" -o "$ICON_TMP/applet.icns" 2>"$ICON_TMP/icon.err"; then
+    ICON_WHY="iconutil lỗi: $(tr -d '\n' < "$ICON_TMP/icon.err" | tail -c 120)"
+  else
     cp "$ICON_TMP/applet.icns" "$APP_DIR/Contents/Resources/applet.icns"
-    ok "icon Jira"
+    # An .icns that exists but is tiny means the conversion produced nothing usable.
+    ICON_BYTES="$(wc -c < "$APP_DIR/Contents/Resources/applet.icns" | tr -d ' ')"
+    if [ "$ICON_BYTES" -lt 5000 ]; then
+      ICON_WHY="icns chỉ $ICON_BYTES bytes — quá nhỏ, có thể ảnh nguồn hỏng"
+    else
+      ok "icon Jira ($ICON_BYTES bytes)"
+    fi
   fi
-else
-  echo "  (bỏ qua icon — không tải được favicon, dùng icon mặc định)"
 fi
+[ -z "$ICON_WHY" ] || printf '  \033[33m⚠\033[0m  dùng icon mặc định — %s\n' "$ICON_WHY"
 rm -rf "$ICON_TMP"
 
 codesign --force --deep -s - "$APP_DIR" >/dev/null 2>&1 || true
