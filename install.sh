@@ -182,6 +182,12 @@ rm -rf "$ICON_TMP"
 
 codesign --force --deep -s - "$APP_DIR" >/dev/null 2>&1 || true
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" >/dev/null 2>&1 || true
+
+# macOS caches app icons, and notifications read from that cache. Reinstalling
+# over the same bundle id otherwise keeps showing the icon from the first
+# install. Restarting the Dock drops the cache; it flickers for a second.
+touch "$APP_DIR"
+killall Dock >/dev/null 2>&1 || true
 ok "$APP_DIR"
 
 # ------------------------------------------------------------------- 5. state
