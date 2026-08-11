@@ -15,20 +15,29 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ASSIGNEES_FIELD, connect, requireAssigneesField } from './env.mjs';
+import { ASSIGNEES_FIELD, ENV_PATH, connect, requireAssigneesField } from './env.mjs';
+import { loadEnv } from './jira.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = join(HERE, 'state.json');
 const LOG_PATH = join(HERE, 'watch.log');
 const ERR_PATH = join(HERE, 'watch.err.log');
+const OK_PATH = join(HERE, 'last-ok.txt');
+const AUTH_ALERT_PATH = join(HERE, 'last-auth-alert.txt');
 const MAX_LOG_LINES = 500;
 const FIELDS = ['key', 'summary', 'status', 'created', 'updated', 'comment', ASSIGNEES_FIELD].join(',');
 const WINDOW_MINUTES = 90;
+// After a long outage the window still has to end somewhere: a week of missed
+// issues would arrive as one unreadable burst of notifications.
+const MAX_CATCHUP_MINUTES = 24 * 60;
+// The token stays broken until a human issues a new one, so the reminder
+// repeats — but at a ten second poll, once an hour is already plenty.
+const AUTH_ALERT_EVERY_MS = 60 * 60 * 1000;
 
 const args = new Set(process.argv.slice(2));
 const verbose = args.has('--verbose');
@@ -82,6 +91,27 @@ export function isNewerVersion(latest, current) {
   }
   return false;
 }
+
+/**
+ * How many minutes back this poll should look. Normally WINDOW_MINUTES, but a
+ * poll that failed for hours (an expired token, a laptop off the office
+ * network) leaves a hole: `updated >= -90m` never returns an issue that moved
+ * during the outage, so its assignment is lost for good. Reach back to the last
+ * successful poll instead, capped so a week away cannot flood the screen.
+ */
+export function catchUpMinutes(lastOkMs, now) {
+  if (!Number.isFinite(lastOkMs)) return WINDOW_MINUTES;
+  const gap = Math.ceil((now - lastOkMs) / 60_000) + 5; // slack for clock skew
+  return Math.min(Math.max(WINDOW_MINUTES, gap), MAX_CATCHUP_MINUTES);
+}
+
+/**
+ * Failures that only a human can clear. Jira answers an expired or revoked PAT
+ * with 401 and a token that lost its rights with 403; a missing token never
+ * gets that far. Everything else — offline, 502, timeout — heals by itself and
+ * must stay silent, or a coffee break would ring the notification centre.
+ */
+export const AUTH_FAILURE = /HTTP 40[13]\b|MISSING_JIRA_TOKEN|Client must be authenticated/;
 
 /**
  * What a first-seen issue's changelog says happened inside the window.
@@ -305,6 +335,47 @@ function notify({ title, subtitle, message, url }) {
   execFile('osascript', ['-e', script], done);
 }
 
+/** A poll that got all the way through. Clears any standing token warning. */
+function markOk() {
+  writeFileSync(OK_PATH, String(Date.now()));
+  try {
+    if (existsSync(AUTH_ALERT_PATH)) unlinkSync(AUTH_ALERT_PATH);
+  } catch {
+    // A stale stamp only delays the next warning by an hour.
+  }
+}
+
+/**
+ * The one failure worth interrupting someone for: without this the poll dies on
+ * stderr, notifications stop, and nothing on screen says why.
+ */
+function alertIfAuthFailure(err) {
+  if (!AUTH_FAILURE.test(err?.message || '')) return;
+
+  const now = Date.now();
+  if (existsSync(AUTH_ALERT_PATH)) {
+    const last = Number(readFileSync(AUTH_ALERT_PATH, 'utf8').trim());
+    if (Number.isFinite(last) && now - last < AUTH_ALERT_EVERY_MS) return;
+  }
+  writeFileSync(AUTH_ALERT_PATH, String(now));
+
+  // Best effort: with no token at all there is no base URL to link to, and the
+  // .env path in the message is the part that matters anyway.
+  let url = '';
+  try {
+    url = `${loadEnv(ENV_PATH).baseUrl}/secure/ViewProfile.jspa`;
+  } catch {
+    // fall through with no link
+  }
+
+  notify({
+    title: 'jira-watch đã dừng theo dõi',
+    subtitle: 'Jira từ chối xác thực — token hết hạn',
+    message: `Tạo Personal Access Token mới rồi sửa JIRA_TOKEN trong ${ENV_PATH}`,
+    url,
+  });
+}
+
 function loadState() {
   if (!existsSync(STATE_PATH)) return {};
   try {
@@ -376,7 +447,39 @@ function trimLogs() {
 const REPO = 'TuqL3/jira-watch';
 const VERSION_PATH = join(HERE, 'VERSION');
 const UPDATE_STAMP = join(HERE, 'last-update-check.txt');
+const NOTIFIED_PATH = join(HERE, 'last-update-notified.txt');
 const UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The version this copy actually runs.
+ *
+ * A git checkout is the authority on itself: its tag moves with every `git
+ * pull`, while VERSION is written once by install.sh and then rots. Reading the
+ * file on a checkout is what made the banner repeat forever — it still said
+ * v1.3.4 long after the working copy had become v1.4.0.
+ *
+ * The released bundle has no .git, so there VERSION remains the only answer.
+ */
+function currentVersion() {
+  try {
+    return execFileSync('git', ['-C', HERE, 'describe', '--tags', '--abbrev=0'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    }).trim();
+  } catch {
+    return existsSync(VERSION_PATH) ? readFileSync(VERSION_PATH, 'utf8').trim() : '';
+  }
+}
+
+/**
+ * Whether this release is worth a banner. Newer alone is not enough: the same
+ * release would then be announced every six hours until the user finally
+ * upgrades, which is nagging, not news.
+ */
+export function shouldAnnounce(latest, current, announced) {
+  return isNewerVersion(latest, current) && latest !== announced;
+}
 
 /**
  * Tell the user when a newer release exists. Applying it means running the
@@ -385,7 +488,8 @@ const UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
  */
 async function checkForUpdate() {
   if (process.env.JIRA_NO_UPDATE_CHECK === '1') return;
-  if (!existsSync(VERSION_PATH)) return; // installed before versions were tracked
+  const current = currentVersion();
+  if (!current) return; // installed before versions were tracked
 
   const now = Date.now();
   if (existsSync(UPDATE_STAMP)) {
@@ -395,7 +499,6 @@ async function checkForUpdate() {
   // Stamp before the request: a failing network must not retry every poll.
   writeFileSync(UPDATE_STAMP, String(now));
 
-  const current = readFileSync(VERSION_PATH, 'utf8').trim();
   let latest = '';
   try {
     const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
@@ -424,6 +527,10 @@ async function checkForUpdate() {
     return;
   }
 
+  const announced = existsSync(NOTIFIED_PATH) ? readFileSync(NOTIFIED_PATH, 'utf8').trim() : '';
+  if (!shouldAnnounce(latest, current, announced)) return;
+  writeFileSync(NOTIFIED_PATH, latest);
+
   notify({
     title: `jira-watch ${latest}`,
     subtitle: `đang dùng ${current}`,
@@ -450,7 +557,8 @@ async function main() {
   // every later run re-seeds instead of notifying.
   const override = [...args].find((a) => a.startsWith('--window='))?.split('=')[1];
   if (override && !/^\d+[mhd]$/.test(override)) throw new Error(`--window must look like 90m, 6h or 30d — got ${override}`);
-  const window = override || (args.has('--init') ? '90d' : `${WINDOW_MINUTES}m`);
+  const lastOk = existsSync(OK_PATH) ? Number(readFileSync(OK_PATH, 'utf8').trim()) : NaN;
+  const window = override || (args.has('--init') ? '90d' : `${catchUpMinutes(lastOk, Date.now())}m`);
   const recent = `updated >= -${window}`;
   // Same cutoff in milliseconds, so a first-seen issue can be judged by when it
   // was created or last commented on rather than by guesswork.
@@ -510,6 +618,7 @@ async function main() {
 
   const seeding = args.has('--init') || Object.keys(before).length === 0;
   if (seeding) {
+    markOk();
     console.log(`Seeded ${Object.keys(after).length} issue(s). No notifications on the first run.`);
     return;
   }
@@ -527,6 +636,10 @@ async function main() {
     console.log(`${stamp}  ${e.text}`);
   }
   if (!events.length && verbose) console.log(`${stamp}  nothing new (${issues.length} issue in window)`);
+
+  // Only now: an outage ends when the events it hid have actually been raised,
+  // so a crash mid-notification still replays on the next poll.
+  markOk();
 
   // Last, so a GitHub hiccup can never delay the notifications people rely on.
   await checkForUpdate();
@@ -569,6 +682,31 @@ function selftest() {
   console.assert(lastChangeAuthor(cl, ['status']) === 'bob', 'ignores entries that touch other fields');
   console.assert(lastChangeAuthor(cl, ['priority']) === '', 'no matching entry yields no author');
   console.assert(lastChangeAuthor(null, ['status']) === '', 'a missing changelog is not an error');
+
+  // Only a failure a human must fix may raise a banner; a ten second poll makes
+  // every false positive a repeating alarm.
+  console.assert(AUTH_FAILURE.test('MYSELF_FAILED: HTTP 401 {"message":"Client must be authenticated to access this resource."}'),
+    'an expired token warns');
+  console.assert(AUTH_FAILURE.test('MYSELF_FAILED: HTTP 403 {"message":"Forbidden"}'), 'a token without rights warns');
+  console.assert(AUTH_FAILURE.test('MISSING_JIRA_TOKEN — chưa có JIRA_TOKEN'), 'no token at all warns');
+  console.assert(!AUTH_FAILURE.test('fetch failed'), 'being off the network stays quiet');
+  console.assert(!AUTH_FAILURE.test('The operation was aborted due to timeout'), 'a timeout stays quiet');
+  console.assert(!AUTH_FAILURE.test('MYSELF_FAILED: HTTP 502 Bad gateway'), 'a 502 stays quiet');
+  console.assert(!AUTH_FAILURE.test('HTTP 404 not found'), 'a 404 is not an auth failure');
+
+  // A release is news once. Repeating it every six hours until the user gives in
+  // is what the update banner used to do.
+  console.assert(shouldAnnounce('v1.4.0', 'v1.3.4', ''), 'a newer release is announced');
+  console.assert(!shouldAnnounce('v1.4.0', 'v1.3.4', 'v1.4.0'), 'the same release is announced once');
+  console.assert(shouldAnnounce('v1.4.1', 'v1.3.4', 'v1.4.0'), 'a release after the announced one still fires');
+  console.assert(!shouldAnnounce('v1.4.0', 'v1.4.0', ''), 'running the latest is not news');
+
+  // The window has to cover the outage, or the changes it hid are never queried.
+  const t0 = 1_700_000_000_000;
+  console.assert(catchUpMinutes(NaN, t0) === WINDOW_MINUTES, 'no stamp = the normal window');
+  console.assert(catchUpMinutes(t0 - 10 * 60_000, t0) === WINDOW_MINUTES, 'a short gap does not shrink the window');
+  console.assert(catchUpMinutes(t0 - 5 * 3_600_000, t0) === 305, 'a five hour outage is covered, plus slack');
+  console.assert(catchUpMinutes(t0 - 40 * 3_600_000, t0) === MAX_CATCHUP_MINUTES, 'a long outage is capped');
 
   // Version comparison decides whether people get nagged, or auto-updated.
   console.assert(isNewerVersion('v1.0.1', 'v1.0.0'), 'patch bump is newer');
@@ -755,6 +893,9 @@ if (args.has('--selftest')) {
 } else {
   main().catch((err) => {
     console.error('ERROR', err.message);
-    process.exit(1);
+    // exitCode, not exit(1): notify's osascript fallback is async and a hard
+    // exit here would kill it before the banner is delivered.
+    process.exitCode = 1;
+    alertIfAuthFailure(err);
   });
 }

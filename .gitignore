@@ -15,3 +15,6 @@ dist/
 # Per-machine runtime state (VERSION is written by install.sh)
 VERSION
 last-update-check.txt
+last-update-notified.txt
+last-ok.txt
+last-auth-alert.txt
