@@ -11,7 +11,7 @@
  *   node watch.mjs               # one poll, notify on anything new
  *   node watch.mjs --verbose     # same, but print what it found
  *
- * Reads JIRA_TOKEN from the falcon jira skill's .env (single source of truth).
+ * Reads JIRA_TOKEN from the shell startup file or .env (see RC_PATHS in jira.mjs).
  */
 
 import { execFile, execFileSync } from 'node:child_process';
@@ -29,6 +29,7 @@ const LOG_PATH = join(HERE, 'watch.log');
 const ERR_PATH = join(HERE, 'watch.err.log');
 const OK_PATH = join(HERE, 'last-ok.txt');
 const AUTH_ALERT_PATH = join(HERE, 'last-auth-alert.txt');
+const SET_TOKEN_PATH = join(HERE, 'set-token.sh');
 const MAX_LOG_LINES = 500;
 const FIELDS = ['key', 'summary', 'status', 'created', 'updated', 'comment', ASSIGNEES_FIELD].join(',');
 const WINDOW_MINUTES = 90;
@@ -309,7 +310,7 @@ const withSound = process.env.JIRA_SOUND === '1' || args.has('--sound');
 // My own edits are not news to me. --include-mine turns the filtering off.
 const includeMine = process.env.JIRA_INCLUDE_MINE === '1' || args.has('--include-mine');
 
-function notify({ title, subtitle, message, url }) {
+function notify({ title, subtitle, message, url, openScript = '' }) {
   const done = (err) => {
     if (err && verbose) console.error('notify failed:', err.message);
   };
@@ -318,9 +319,9 @@ function notify({ title, subtitle, message, url }) {
   if (withSound) execFile('/usr/bin/afplay', ['/System/Library/Sounds/Glass.aiff'], () => {});
 
   if (notifier !== 'osascript' && existsSync(APPLET)) {
-    // Five lines, in the order the applet reads them. execFileSync so two events
+    // Six lines, in the order the applet reads them. execFileSync so two events
     // in the same poll cannot overwrite each other's payload mid-flight.
-    writeFileSync(PAYLOAD, ["post", line(title), line(subtitle), line(message), url || ""].join('\n') + '\n');
+    writeFileSync(PAYLOAD, ["post", line(title), line(subtitle), line(message), url || "", openScript].join('\n') + '\n');
     try {
       execFileSync(APPLET, { timeout: 10_000, stdio: 'ignore' });
       return;
@@ -359,8 +360,7 @@ function alertIfAuthFailure(err) {
   }
   writeFileSync(AUTH_ALERT_PATH, String(now));
 
-  // Best effort: with no token at all there is no base URL to link to, and the
-  // .env path in the message is the part that matters anyway.
+  // Best effort: with no token at all there is no base URL to link to.
   let url = '';
   try {
     url = `${loadEnv(ENV_PATH).baseUrl}/secure/ViewProfile.jspa`;
@@ -368,11 +368,18 @@ function alertIfAuthFailure(err) {
     // fall through with no link
   }
 
+  // One click opens both halves of the job: the Jira page that issues the new
+  // token, and a Terminal already sitting at the prompt that takes it. The
+  // command stays in the text as well — with JIRA_NOTIFIER=osascript there is
+  // nothing to click, and that must not become a dead end.
+  const short = (p) => (p.startsWith(homedir()) ? p.replace(homedir(), '~') : p);
+
   notify({
     title: 'jira-watch đã dừng theo dõi',
     subtitle: 'Jira từ chối xác thực — token hết hạn',
-    message: `Tạo Personal Access Token mới rồi sửa JIRA_TOKEN trong ${ENV_PATH}`,
+    message: `Bấm vào đây, hoặc chạy: bash ${short(SET_TOKEN_PATH)}`,
     url,
+    openScript: SET_TOKEN_PATH,
   });
 }
 

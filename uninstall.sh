@@ -19,5 +19,5 @@ rm -f "$HOME/.jira-notify-payload" /tmp/jira-notify-click.log
 ok "đã xoá state và log"
 
 echo
-echo "Giữ nguyên: JIRA_TOKEN trong .env (skill falcon:jira vẫn dùng nó)."
-echo "Muốn xoá hẳn thì tự xoá dòng JIRA_TOKEN trong file .env."
+echo "Giữ nguyên: dòng JIRA_TOKEN trong file rc của shell (skill falcon:jira vẫn dùng nó)."
+echo "Muốn xoá hẳn thì tự xoá dòng đó trong ~/.zshrc hoặc ~/.bashrc."

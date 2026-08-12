@@ -13,7 +13,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$HERE/dist/install-jira-watch.sh"
-SOURCES=(watch.mjs act.mjs env.mjs jira.mjs JiraNotify.applescript uninstall.sh)
+SOURCES=(watch.mjs act.mjs env.mjs jira.mjs JiraNotify.applescript set-token.sh uninstall.sh)
 
 mkdir -p "$HERE/dist"
 
@@ -62,7 +62,7 @@ HEADER
   fi
 
   cat <<'MIDDLE'
-chmod +x "$TARGET/uninstall.sh"
+chmod +x "$TARGET/uninstall.sh" "$TARGET/set-token.sh"
 
 # Lets the build be verified without installing anything.
 if [ -n "${EXTRACT_ONLY:-}" ]; then

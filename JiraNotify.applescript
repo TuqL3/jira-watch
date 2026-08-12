@@ -8,6 +8,12 @@
 --   mode=post  -> the watcher just wrote a new event; show it, then flip to open
 --   mode=open  -> we were launched by a notification click; open the URL
 --
+-- Line 6 is optional and only the expired-token notification sets it: a script
+-- to open in Terminal alongside the URL, so replacing a token is one click and
+-- a paste instead of finding a path and typing it. Only set-token.sh is ever
+-- run — the payload file is writable by anything running as this user, and a
+-- click should not become a way to launch whatever was left in it.
+--
 -- Do not name a variable `lines`: AppleScript reads it as `every line` and the
 -- assignment fails with -10006.
 --
@@ -42,6 +48,15 @@ on openStashedURL()
 	set theURL to item 5 of payloadLines
 	do shell script "echo '  opening " & theURL & "' >> /tmp/jira-notify-click.log"
 	if theURL is not "" then open location theURL
+
+	-- `open -a Terminal` and not `tell application "Terminal"`: the second one
+	-- needs an Automation permission the user has to grant in a dialog first,
+	-- and this has to work the very first time it is needed.
+	if (count of payloadLines) < 6 then return
+	set theScript to item 6 of payloadLines
+	if theScript ends with "/set-token.sh" then
+		do shell script "open -a Terminal " & quoted form of theScript
+	end if
 end openStashedURL
 
 on run

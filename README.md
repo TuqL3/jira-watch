@@ -61,6 +61,61 @@ Cần trước: macOS, Node >= 18, và một Personal Access Token Jira
 Script sẽ hỏi token, dựng app thông báo, nạp danh sách task, bật lịch chạy.
 Khoảng 1 phút.
 
+### Token nằm ở đâu
+
+Hai nguồn: **file khởi động của shell** và `.env` cạnh script.
+
+Cài máy mới = thêm đúng một dòng vào file rc của shell bạn dùng:
+
+```bash
+export JIRA_TOKEN=<token>
+```
+
+`install.sh` tự ghi dòng này, chọn file theo `$SHELL`: zsh → `~/.zshrc`, bash →
+`~/.bashrc`. Không có file rc nào thì mới tạo — nó **không** tự tạo
+`~/.bash_profile`, vì tạo file đó ra sẽ làm bash thôi đọc `~/.profile`.
+
+Thứ tự tra:
+
+| | zsh | bash |
+|---|---|---|
+| 1 | biến môi trường | biến môi trường |
+| 2 | `~/.zshrc` | `~/.bashrc` |
+| 3 | `~/.bashrc` | `~/.bash_profile` |
+| 4 | `~/.bash_profile` | `~/.zshrc` |
+| 5 | `.env` | `.env` |
+
+`.env` đứng cuối, giữ cho máy cài từ bản cũ vẫn chạy; lần `install.sh` tiếp theo
+chuyển token sang file rc. `set-token.sh` **xoá token thừa ở các file rc còn lại**
+để không có bản cũ nào leo lên đầu hàng.
+
+watcher **đọc thẳng file**, không nhờ shell export: launchd không chạy login shell
+nên không có gì trong file rc tới được nó. Hệ quả: chỉ nhận giá trị viết thẳng ra,
+`export JIRA_TOKEN=$(...)` sẽ bị lấy nguyên chuỗi chứ không chạy.
+
+⚠️ File rc mặc định `chmod 644` — user khác trên cùng máy đọc được. Máy dùng chung
+thì `chmod 600` file đó. `set-token.sh` có nhắc.
+
+### Token hết hạn — bấm vào noti là xong
+
+Watcher báo một noti (mỗi tiếng một lần, không spam). **Bấm vào noti** thì mở luôn
+2 thứ:
+
+1. trang Jira để tạo Personal Access Token mới
+2. một cửa sổ Terminal đang đứng sẵn ở chỗ nhập token
+
+Copy token từ (1), dán vào (2), Enter. Hết.
+
+Không bấm được (dùng `JIRA_NOTIFIER=osascript`) thì chạy tay:
+
+```bash
+~/Projects/jira-watch/set-token.sh
+```
+
+Nó **thử token với Jira trước khi ghi** — sai thì không đụng vào file nào — rồi thay
+dòng `export JIRA_TOKEN=` (giữ bản cũ ở `<file>.jira-watch.bak`). Không cần mở shell
+mới, nhịp quét sau là chạy lại.
+
 ### Sau khi cài phải làm 1 việc bằng tay
 
 **System Settings → Notifications → JiraNotify → Allow notifications**, alert style
@@ -80,6 +135,7 @@ node act.mjs assign   ABC-123 --user bob
 node act.mjs unassign ABC-123
 tail -f watch.log                   # sự kiện đã xảy ra
 cat last-run.txt                    # còn sống không
+./set-token.sh                      # token hết hạn → nhập token mới
 ./uninstall.sh
 ```
 
@@ -119,6 +175,7 @@ không sót sự kiện.
 | `JIRA_NOTIFIER=osascript` | không dùng app riêng — noti vẫn hiện nhưng **bấm không mở được task** |
 | `JIRA_BASE_URL=<url>` | Jira khác instance mặc định |
 | `JIRA_WATCH_ENV=<path>` | file .env nằm chỗ khác |
+| `JIRA_WATCH_RC=<path>` | ép dùng đúng 1 file chứa token, bỏ qua bảng thứ tự trên |
 
 ## Vì sao cần `JiraNotify.app`
 
@@ -218,7 +275,7 @@ Kiểm bundle khớp mã nguồn:
 
 ```bash
 EXTRACT_ONLY=1 TARGET=/tmp/jw bash dist/install-jira-watch.sh
-for f in watch.mjs act.mjs env.mjs jira.mjs JiraNotify.applescript uninstall.sh; do
+for f in watch.mjs act.mjs env.mjs jira.mjs JiraNotify.applescript set-token.sh uninstall.sh; do
   diff -q "$f" "/tmp/jw/$f" || echo "LỆCH: $f"
 done
 ```
@@ -228,7 +285,7 @@ done
 ```bash
 node watch.mjs --selftest    # logic phát hiện thay đổi
 node act.mjs   --selftest    # merge/remove assignee
-node jira.mjs  --selftest    # parse .env, config
+node jira.mjs  --selftest    # parse .env/rc, thứ tự tra token
 ```
 
 Fail thì exit code khác 0 (`console.assert` một mình không làm được điều đó).

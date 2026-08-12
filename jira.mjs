@@ -7,13 +7,40 @@
  * <site>.atlassian.net and speaks REST v3.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const TIMEOUT_MS = 30_000;
 
 // The instance this was written for. Override with JIRA_BASE_URL for any other.
 const DEFAULT_BASE_URL = 'https://space.avada.net';
+
+/**
+ * Shell startup files that may hold the token, best match first. The token goes
+ * in one of these because it is a file every machine already has and everyone
+ * knows how to edit — a new device needs one line pasted in, an expired token
+ * needs that line changed, with no hidden file to discover first.
+ *
+ * Every candidate is read, not just the current shell's: launchd starts
+ * watch.mjs with no SHELL set, so the shell can only be a hint about which file
+ * to prefer, never a filter. The order settles ties — one token in .zshrc and
+ * another in .bashrc has to resolve the same way on every run.
+ *
+ * They are read as files, never inherited from the environment: launchd starts
+ * no login shell, so nothing these files export ever reaches the watcher. A
+ * consequence: only literal values work. `export JIRA_TOKEN=$(security ...)`
+ * is stored verbatim, never run.
+ */
+const rc = (name) => join(homedir(), name);
+const USES_BASH = /bash$/.test(process.env.SHELL || '');
+
+export const RC_PATHS = process.env.JIRA_WATCH_RC
+  ? [process.env.JIRA_WATCH_RC]
+  : USES_BASH
+    ? [rc('.bashrc'), rc('.bash_profile'), rc('.zshrc')]
+    : [rc('.zshrc'), rc('.bashrc'), rc('.bash_profile')];
 
 /** Parse KEY=VALUE lines. Ignores comments, blank lines and inline `export`. */
 export function parseEnvFile(text) {
@@ -32,16 +59,30 @@ export function parseEnvFile(text) {
 }
 
 /**
- * Settings, from the environment first so a one-off run can override the file.
- * Throws rather than guessing: a wrong host or a missing token would otherwise
- * surface much later as a confusing HTTP error.
+ * One lookup across every source, in order: the environment (so a one-off run
+ * can override everything), then the shell startup files, then .env last.
+ *
+ * .env comes last on purpose. It is where installs older than the move kept the
+ * token, and a freshly pasted one must not sit behind an expired one nobody
+ * remembers writing.
  */
-export function loadEnv(envPath) {
-  const fromFile = envPath && existsSync(envPath) ? parseEnvFile(readFileSync(envPath, 'utf8')) : {};
-  const token = process.env.JIRA_TOKEN || fromFile.JIRA_TOKEN || '';
-  const baseUrl = process.env.JIRA_BASE_URL || fromFile.JIRA_BASE_URL || DEFAULT_BASE_URL;
+export function settingsFrom(envPath, rcPaths = RC_PATHS) {
+  const read = (p) => (p && existsSync(p) ? parseEnvFile(readFileSync(p, 'utf8')) : {});
+  const sources = [...rcPaths, envPath].map(read);
+  return (name) => process.env[name] || sources.map((s) => s[name]).find(Boolean) || '';
+}
 
-  if (!token) throw new Error(`MISSING_JIRA_TOKEN — chưa có JIRA_TOKEN trong ${envPath || 'môi trường'}`);
+/**
+ * Settings. Throws rather than guessing: a wrong host or a missing token would
+ * otherwise surface much later as a confusing HTTP error.
+ */
+export function loadEnv(envPath, rcPaths = RC_PATHS) {
+  const get = settingsFrom(envPath, rcPaths);
+
+  const token = get('JIRA_TOKEN');
+  const baseUrl = get('JIRA_BASE_URL') || DEFAULT_BASE_URL;
+
+  if (!token) throw new Error(`MISSING_JIRA_TOKEN — chưa có JIRA_TOKEN trong ${rcPaths[0] || envPath || 'môi trường'}`);
 
   return { baseUrl: baseUrl.replace(/\/+$/, ''), token };
 }
@@ -119,6 +160,8 @@ function selftest() {
   console.assert(!('lowercase' in e), 'lowercase keys are not settings');
 
   // Missing config must fail loudly here, not as a puzzling HTTP error later.
+  // Every call below passes both paths explicitly — with the defaults, whatever
+  // the person running this has in their own ~/.zshrc would decide the result.
   const saved = { t: process.env.JIRA_TOKEN, u: process.env.JIRA_BASE_URL };
   delete process.env.JIRA_TOKEN;
   delete process.env.JIRA_BASE_URL;
@@ -131,13 +174,33 @@ function selftest() {
       return pattern.test(err.message);
     }
   };
-  console.assert(throws(() => loadEnv(null), /MISSING_JIRA_TOKEN/), 'no token = MISSING_JIRA_TOKEN');
+  console.assert(throws(() => loadEnv(null, []), /MISSING_JIRA_TOKEN/), 'no token = MISSING_JIRA_TOKEN');
 
-  process.env.JIRA_TOKEN = 'x';
-  console.assert(loadEnv(null).baseUrl === DEFAULT_BASE_URL, 'falls back to the default instance');
+  // Where the token comes from, in order. The rc line is the one a human just
+  // typed; an old .env token must not shadow it. And with a token in two rc
+  // files, the earlier one has to win every time — a resolution order that
+  // depends on the day would be worse than either answer.
+  const dir = mkdtempSync(join(tmpdir(), 'jira-watch-'));
+  const zshrc = join(dir, 'zshrc');
+  const bashrc = join(dir, 'bashrc');
+  const absent = join(dir, 'absent');
+  const dotenv = join(dir, 'env');
+  writeFileSync(zshrc, '# my shell\nexport PATH="$HOME/bin:$PATH"\nexport JIRA_TOKEN=from-zsh\n');
+  writeFileSync(bashrc, 'export JIRA_TOKEN=from-bash\n');
+  writeFileSync(dotenv, 'JIRA_TOKEN=stale\n');
+
+  console.assert(loadEnv(dotenv, [zshrc, bashrc]).token === 'from-zsh', 'an rc file beats a stale .env');
+  console.assert(loadEnv(dotenv, [bashrc, zshrc]).token === 'from-bash', 'the first rc file in the list wins');
+  console.assert(loadEnv(dotenv, [absent, bashrc]).token === 'from-bash', 'an rc file that does not exist is skipped');
+  console.assert(loadEnv(dotenv, [absent]).token === 'stale', '.env still works where no rc file has a token');
+  process.env.JIRA_TOKEN = 'override';
+  console.assert(loadEnv(dotenv, [zshrc]).token === 'override', 'the environment beats every file');
+  rmSync(dir, { recursive: true, force: true });
+
+  console.assert(loadEnv(null, []).baseUrl === DEFAULT_BASE_URL, 'falls back to the default instance');
 
   process.env.JIRA_BASE_URL = 'https://jira.example.com///';
-  console.assert(loadEnv(null).baseUrl === 'https://jira.example.com', 'an override wins and loses its trailing slashes');
+  console.assert(loadEnv(null, []).baseUrl === 'https://jira.example.com', 'an override wins and loses its trailing slashes');
 
   if (saved.t === undefined) delete process.env.JIRA_TOKEN; else process.env.JIRA_TOKEN = saved.t;
   if (saved.u === undefined) delete process.env.JIRA_BASE_URL; else process.env.JIRA_BASE_URL = saved.u;

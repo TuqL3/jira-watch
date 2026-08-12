@@ -62,7 +62,21 @@ ok "không cần plugin nào — jira-watch tự chứa client Jira"
 say "2/6  Địa chỉ Jira và token"
 
 ENV_FILE="$HERE/.env"
+# The token goes in the shell startup file — ~/.zshrc, or ~/.bashrc under bash.
+# One line, in a file every machine already has and everyone can edit, so
+# replacing an expired token needs no hunting. Everything else stays in .env:
+# machine config, not a secret anyone re-types.
+#
+# set-token.sh owns that whole job (pick the file, verify the token, write it),
+# so there is one implementation of it and installing walks the same path as
+# recovering from an expiry — the path that gets exercised least, tested most.
+TOKEN_LINE='^[[:space:]]*(export[[:space:]]+)?JIRA_TOKEN[[:space:]]*=[[:space:]]*\S'
 touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
+
+# `open -a Terminal` runs a .sh only when it carries the execute bit, and that
+# is what the expired-token notification does when it is clicked. Without this
+# the click looks like it did nothing at all.
+chmod +x "$HERE/set-token.sh"
 
 # The instance is baked into jira.mjs; only write a line here when overriding.
 if [ -n "${JIRA_BASE_URL:-}" ] && ! grep -qE '^[[:space:]]*JIRA_BASE_URL[[:space:]]*=' "$ENV_FILE"; then
@@ -70,21 +84,25 @@ if [ -n "${JIRA_BASE_URL:-}" ] && ! grep -qE '^[[:space:]]*JIRA_BASE_URL[[:space
   ok "Jira (ghi đè): $JIRA_BASE_URL"
 fi
 
-if grep -qE '^[[:space:]]*JIRA_TOKEN[[:space:]]*=[[:space:]]*\S' "$ENV_FILE"; then
-  ok "đã có JIRA_TOKEN trong $ENV_FILE"
+HAVE_TOKEN=""
+for f in "${JIRA_WATCH_RC:-}" "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+  if [ -n "$f" ] && [ -f "$f" ] && grep -qE "$TOKEN_LINE" "$f"; then HAVE_TOKEN="$f"; break; fi
+done
+
+if [ -n "$HAVE_TOKEN" ]; then
+  ok "đã có JIRA_TOKEN trong $HAVE_TOKEN"
 else
-  TOKEN="${JIRA_TOKEN:-}"
+  # Installs from before the token moved keep it in .env. Reuse it rather than
+  # making someone issue a new token for one that still works.
+  # Split on the FIRST `=` only: a base64 token can end in `=` padding, and a
+  # greedy match would hand back an empty string for a perfectly good token.
+  OLD_TOKEN="$(grep -E "$TOKEN_LINE" "$ENV_FILE" 2>/dev/null | tail -1 | sed 's/^[^=]*=[[:space:]]*//' || true)"
 
-  if [ -z "$TOKEN" ] && [ "$HAS_TTY" = 1 ]; then
-    echo "  Tạo Personal Access Token: mở Jira → avatar → Profile → Personal Access Tokens"
-    echo "  Lưu ý: token sẽ hiện ra màn hình để bạn kiểm tra, và nằm lại trong"
-    echo "  lịch sử cuộn của terminal. Đóng cửa sổ terminal sau khi cài xong."
-    printf '  Dán token vào đây: '
-    read -r TOKEN <&3 || TOKEN=""
-  fi
-
-  if [ -z "$TOKEN" ]; then
-    red "Chưa có token để dùng."
+  # As an argument, not as JIRA_TOKEN in the environment: set-token.sh ignores
+  # that variable on purpose, because a notification opens it in a shell where
+  # the expired token is already exported.
+  if ! JIRA_WATCH_NO_HOLD=1 bash "$HERE/set-token.sh" "${JIRA_TOKEN:-$OLD_TOKEN}"; then
+    red "Chưa có token dùng được."
     echo "  Chạy qua ống (curl | bash) thì stdin là chính script, không gõ tay được."
     echo "  Cách 1 — truyền sẵn token:"
     echo "    JIRA_TOKEN=<token> bash -c \"\$(curl -fsSL <url>)\""
@@ -92,9 +110,9 @@ else
     echo "    curl -fsSLO <url> && bash install-jira-watch.sh"
     exit 1
   fi
-  printf 'JIRA_TOKEN=%s\n' "$TOKEN" >> "$ENV_FILE"
-  unset TOKEN
-  ok "đã ghi $ENV_FILE (chmod 600)"
+  if [ -n "$OLD_TOKEN" ]; then
+    echo "  (lấy lại từ $ENV_FILE — xoá dòng JIRA_TOKEN ở đó đi, không còn dùng nữa)"
+  fi
 fi
 
 # A token that does not authenticate makes every later step fail confusingly.
@@ -330,6 +348,7 @@ Lệnh hay dùng:
   node act.mjs assign ABC-123
   tail -f watch.log             sự kiện đã xảy ra
   cat last-run.txt              còn sống không
+  ./set-token.sh                token hết hạn → nhập token mới
   ./uninstall.sh                gỡ sạch
 
 EOF
