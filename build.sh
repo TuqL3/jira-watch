@@ -27,7 +27,11 @@ for f in "${SOURCES[@]}" install.sh; do
 done
 
 {
-  VERSION="$(git -C "$HERE" describe --tags --abbrev=0 2>/dev/null || echo unknown)"
+  # release.sh builds the asset before it creates the tag — a failed build must
+  # not leave a tag behind — so `git describe` here would stamp the PREVIOUS
+  # release into the bundle. It passes the version it is about to cut instead,
+  # and every install from that bundle then reports the version it really is.
+  VERSION="${JW_VERSION:-$(git -C "$HERE" describe --tags --abbrev=0 2>/dev/null || echo unknown)}"
   printf '#!/bin/bash\nJW_VERSION=%s\n' "$VERSION"
   cat <<'HEADER'
 # Jira watcher — self-contained installer. No git clone needed.

@@ -37,8 +37,11 @@ TOKEN="${GH_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git credenti
 SLUG="$(git -C "$HERE" remote get-url origin | sed -E 's#.*github\.com[:/]##; s#\.git$##')"
 ok "repo: $SLUG"
 
-# The asset must be built from exactly the commit being tagged.
-"$HERE/build.sh" >/dev/null
+# The asset must be built from exactly the commit being tagged, and stamped with
+# the version about to be cut — build.sh would otherwise read `git describe` and
+# write the previous release into the bundle, so every install would immediately
+# think it was one version behind.
+JW_VERSION="$VERSION" "$HERE/build.sh" >/dev/null
 ok "bundle: $(wc -c < "$ASSET" | tr -d ' ') bytes"
 
 if git -C "$HERE" rev-parse "$VERSION" >/dev/null 2>&1; then
