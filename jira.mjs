@@ -117,6 +117,25 @@ export async function jiraFetch(path, { method = 'GET', body, env } = {}) {
   return { status: res.status, json };
 }
 
+/**
+ * Is Jira itself serving? /status is the instance's own health endpoint: it
+ * ignores credentials, so it still answers when the token is dead — which is
+ * the only time this gets asked. It answers `{"state":"RUNNING"}` when Jira is
+ * up, and the CDN in front returns its own 5xx when it is not.
+ *
+ * A 401 alone says nothing about the token. Something sick between here and
+ * Jira rejects requests just as flatly as an expired token does, and no new
+ * token would fix that. This is what separates the two.
+ */
+export async function jiraIsUp(env) {
+  try {
+    const { status, json } = await jiraFetch('/status', { env });
+    return status === 200 && json?.state === 'RUNNING';
+  } catch {
+    return false; // unreachable is an outage, never an expiry
+  }
+}
+
 /** My own username — the value Jira uses in assignee and changelog fields. */
 export async function fetchMyself(env) {
   const { status, json } = await jiraFetch('/rest/api/2/myself', { env });

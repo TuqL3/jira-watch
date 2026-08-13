@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ASSIGNEES_FIELD, ENV_PATH, connect, requireAssigneesField } from './env.mjs';
-import { loadEnv } from './jira.mjs';
+import { jiraIsUp, loadEnv } from './jira.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = join(HERE, 'state.json');
@@ -39,6 +39,11 @@ const MAX_CATCHUP_MINUTES = 24 * 60;
 // The token stays broken until a human issues a new one, so the reminder
 // repeats — but at a ten second poll, once an hour is already plenty.
 const AUTH_ALERT_EVERY_MS = 60 * 60 * 1000;
+// Jira sits behind Cloudflare, which answers the odd request with 401 on a
+// token that is perfectly fine — one log held 31 of them among 268 "fetch
+// failed". A single 401 is a flapping connection; three polls in a row is a
+// token that really is gone.
+const AUTH_FAILURES_BEFORE_ALERT = 3;
 
 const args = new Set(process.argv.slice(2));
 const verbose = args.has('--verbose');
@@ -346,27 +351,65 @@ function markOk() {
   }
 }
 
+/** The "<failures in a row> <time of the last banner>" the stamp file holds. */
+function readAuthStamp() {
+  if (!existsSync(AUTH_ALERT_PATH)) return { fails: 0, lastAlert: 0 };
+  const [a, b] = readFileSync(AUTH_ALERT_PATH, 'utf8').trim().split(/\s+/).map(Number);
+  // A file written before this format existed holds one number, the alert time.
+  // Treat it as a streak already met, so it keeps meaning exactly what it meant.
+  if (!Number.isFinite(b)) {
+    return { fails: AUTH_FAILURES_BEFORE_ALERT, lastAlert: Number.isFinite(a) ? a : 0 };
+  }
+  return { fails: Number.isFinite(a) ? a : 0, lastAlert: b };
+}
+
+/**
+ * Everything about the warning that can be decided without asking Jira: has the
+ * rejection lasted, and has enough time passed since the last banner. Pure, so
+ * the rule can be tested without files, banners, or a network.
+ */
+export function authAlertDecision(message, stamp, now) {
+  // Any other failure breaks the streak. An outage says nothing about the
+  // token, and counting through one turns two unrelated flaps into an alarm.
+  if (!AUTH_FAILURE.test(message || '')) return { fails: 0, due: false };
+
+  // lastAlert 0 means nothing has been said yet, which is not "said a long time
+  // ago" — the subtraction only happens to give the same answer with real
+  // timestamps, and would hide the first banner under any clock that starts low.
+  const fails = stamp.fails + 1;
+  const fresh = !stamp.lastAlert || now - stamp.lastAlert >= AUTH_ALERT_EVERY_MS;
+  return { fails, due: fails >= AUTH_FAILURES_BEFORE_ALERT && fresh };
+}
+
 /**
  * The one failure worth interrupting someone for: without this the poll dies on
  * stderr, notifications stop, and nothing on screen says why.
+ *
+ * It has to be certain first. A banner that cries "token hết hạn" at a network
+ * blip teaches people to ignore the one that means it, so three things must all
+ * hold before anything is said: the failure is an auth failure, it survived
+ * several polls in a row, and Jira answers its own health check — proof the
+ * instance is up and it is the token being refused, not the road to it.
  */
-function alertIfAuthFailure(err) {
-  if (!AUTH_FAILURE.test(err?.message || '')) return;
-
+async function alertIfAuthFailure(err) {
   const now = Date.now();
-  if (existsSync(AUTH_ALERT_PATH)) {
-    const last = Number(readFileSync(AUTH_ALERT_PATH, 'utf8').trim());
-    if (Number.isFinite(last) && now - last < AUTH_ALERT_EVERY_MS) return;
-  }
-  writeFileSync(AUTH_ALERT_PATH, String(now));
+  const before = readAuthStamp();
+  const next = authAlertDecision(err?.message, before, now);
 
-  // Best effort: with no token at all there is no base URL to link to.
-  let url = '';
+  // Best effort: with no token at all there is no base URL, and nothing to ask.
+  // That case needs no proof either — a missing token is already a human's job.
+  let env = null;
   try {
-    url = `${loadEnv(ENV_PATH).baseUrl}/secure/ViewProfile.jspa`;
+    env = loadEnv(ENV_PATH);
   } catch {
-    // fall through with no link
+    // fall through with no link and no probe
   }
+
+  const speak = next.due && (!env || await jiraIsUp(env));
+  writeFileSync(AUTH_ALERT_PATH, `${next.fails} ${speak ? now : before.lastAlert}`);
+  if (!speak) return;
+
+  const url = env ? `${env.baseUrl}/secure/ViewProfile.jspa` : '';
 
   // One click opens both halves of the job: the Jira page that issues the new
   // token, and a Terminal already sitting at the prompt that takes it. The
@@ -376,7 +419,9 @@ function alertIfAuthFailure(err) {
 
   notify({
     title: 'jira-watch đã dừng theo dõi',
-    subtitle: 'Jira từ chối xác thực — token hết hạn',
+    // Says what was actually established: Jira answered, and refused this
+    // token. Whether it expired or was revoked, the fix is the same one token.
+    subtitle: 'Jira vẫn chạy nhưng từ chối token',
     message: `Bấm vào đây, hoặc chạy: bash ${short(SET_TOKEN_PATH)}`,
     url,
     openScript: SET_TOKEN_PATH,
@@ -698,6 +743,29 @@ function selftest() {
   console.assert(AUTH_FAILURE.test('MISSING_JIRA_TOKEN — chưa có JIRA_TOKEN'), 'no token at all warns');
   console.assert(!AUTH_FAILURE.test('fetch failed'), 'being off the network stays quiet');
   console.assert(!AUTH_FAILURE.test('The operation was aborted due to timeout'), 'a timeout stays quiet');
+
+  // …and matching once is not enough: something sick between here and Jira
+  // answers 401 on a perfectly good token, which is what made this spam
+  // banners. Only a rejection that survives several polls in a row counts.
+  const dead = 'MYSELF_FAILED: HTTP 401 {"message":"Client must be authenticated"}';
+  const step = (msg, stamp, now) => {
+    const d = authAlertDecision(msg, stamp, now);
+    return { ...d, lastAlert: d.due ? now : stamp.lastAlert };
+  };
+
+  const one = step(dead, { fails: 0, lastAlert: 0 }, 1000);
+  console.assert(!one.due && one.fails === 1, 'a lone 401 must not warn');
+  const two = step(dead, one, 2000);
+  console.assert(!two.due && two.fails === 2, 'two in a row must not warn');
+  const three = step(dead, two, 3000);
+  console.assert(three.due && three.lastAlert === 3000, 'three in a row is a token to replace');
+
+  const broken = step('fetch failed', two, 2500);
+  console.assert(!broken.due && broken.fails === 0, 'an outage breaks the streak');
+  console.assert(!step(dead, broken, 3000).due, 'and the count starts over after it');
+
+  console.assert(!step(dead, three, 3000 + 60_000).due, 'a repeat inside the hour stays quiet');
+  console.assert(step(dead, three, 3000 + AUTH_ALERT_EVERY_MS).due, 'after an hour it warns again');
   console.assert(!AUTH_FAILURE.test('MYSELF_FAILED: HTTP 502 Bad gateway'), 'a 502 stays quiet');
   console.assert(!AUTH_FAILURE.test('HTTP 404 not found'), 'a 404 is not an auth failure');
 
@@ -898,11 +966,11 @@ function selftest() {
 if (args.has('--selftest')) {
   selftest();
 } else {
-  main().catch((err) => {
+  main().catch(async (err) => {
     console.error('ERROR', err.message);
     // exitCode, not exit(1): notify's osascript fallback is async and a hard
     // exit here would kill it before the banner is delivered.
     process.exitCode = 1;
-    alertIfAuthFailure(err);
+    await alertIfAuthFailure(err);
   });
 }

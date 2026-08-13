@@ -98,8 +98,19 @@ thì `chmod 600` file đó. `set-token.sh` có nhắc.
 
 ### Token hết hạn — bấm vào noti là xong
 
-Watcher báo một noti (mỗi tiếng một lần, không spam). **Bấm vào noti** thì mở luôn
-2 thứ:
+Một cái 401 không chứng minh được gì: hạ tầng giữa máy bạn và Jira từ chối y hệt
+token hết hạn, mà đổi token thì không sửa được hạ tầng. Nên watcher chỉ báo khi cả
+ba điều cùng đúng:
+
+1. lỗi là lỗi xác thực (401/403/không có token) — mất mạng hay timeout thì không tính
+2. nó **kéo dài 3 nhịp quét liên tiếp** — lỗi khác xen vào là đếm lại từ đầu
+3. `GET /status` của chính Jira trả `{"state":"RUNNING"}` — bằng chứng Jira còn sống
+   và đang từ chối đúng cái token, endpoint này không cần auth nên token chết vẫn hỏi được
+
+Jira sập hay Cloudflare 5xx → im, dù 401 bao nhiêu lần cũng vậy. Hạ tầng sống lại mà
+token vẫn hỏng → báo ngay nhịp đó. Báo rồi thì mỗi tiếng nhắc một lần.
+
+**Bấm vào noti** thì mở luôn 2 thứ:
 
 1. trang Jira để tạo Personal Access Token mới
 2. một cửa sổ Terminal đang đứng sẵn ở chỗ nhập token
